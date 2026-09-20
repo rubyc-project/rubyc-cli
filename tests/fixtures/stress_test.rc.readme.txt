@@ -1,0 +1,19 @@
+CoreCSharp11MegaStress.cs
+  Main positive runtime fixture. Compile as its own executable with C# 11 language mode and unsafe enabled.
+
+FileScopedNamespaceFixture.cs
+  Separate executable fixture for C# 10 file-scoped namespace syntax.
+
+TopLevelStatementsFixture.cs
+  Separate executable fixture for C# 9 top-level statements.
+
+CrossFilePartial.Part1.cs + CrossFilePartial.Part2.cs
+  Compile together as one library/executable dependency fixture to test partial type merging across source files.
+
+Output convention
+  TRACE|...      deterministic execution trace
+  FINALIZER|...  finalizer trace; order/timing is runtime-defined in standard C#
+
+Intentional exclusion
+  No using directives.
+  No async/await/threading/lock/concurrency tests; those belong in the separate threading fixture.

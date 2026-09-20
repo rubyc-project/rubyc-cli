@@ -1,0 +1,14 @@
+// testns.rc — a RubyC library: `testns.TestLib.add` exported as a plain
+// `add` symbol. Namespaces and classes are compiler-side organization;
+// the exposed library surface is just symbols.
+namespace testns {
+    class TestLib {
+        public int add(int a, int b) {
+            return a + b;
+        }
+
+        public int inc(int v) {
+            return v + 1;
+        }
+    }
+}

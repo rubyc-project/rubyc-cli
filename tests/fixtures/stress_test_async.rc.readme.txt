@@ -1,0 +1,101 @@
+CoreCSharp11AsyncThreadMegaStress.cs
+====================================
+
+Purpose
+-------
+Positive/runnable stress fixture for compiler and runtime testing of C# async/await,
+threading, synchronization, concurrency, and their interaction with core C# language
+features through C# 11.
+
+Source rules
+------------
+- No `using` directives.
+- Global `printf(...)` is assumed to be a compiler/runtime intrinsic.
+- Fully-qualified framework type names are used where runtime threading/task types are required.
+- `using (...)` statements and `await using` are intentionally present; these are statements,
+  not `using` directives, and are themselves language features under test.
+- Unsafe compilation must be enabled for the unsafe/function-pointer section.
+- Target language version: C# 11.
+- Dynamic binding is intentionally exercised.
+
+Output format
+-------------
+The source uses pipe-delimited records intended for automated parsing.
+
+TRACE|order=ORDERED|area=<area>|test=<test>|event=<event>|key=value|...
+    Deterministic/control-flow trace. Compare sequence where the named test is ordered.
+
+CONCURRENT|order=UNORDERED|area=<area>|test=<test>|logicalId=<id>|event=<event>|...
+    Concurrent trace. Validate the expected set/multiset of records by logical IDs and fields;
+    do not require scheduler-dependent line ordering.
+
+RACE|order=UNORDERED|area=<area>|test=<test>|comparison=NONDETERMINISTIC|...
+    Intentional data-race test. Validate bounds/invariants and presence, not an exact final value.
+
+FINALIZER|order=UNORDERED|type=<type>|...
+    Finalizer trace. Standard C# does not guarantee lexical-scope finalization or finalizer order.
+    The lifecycle section explicitly requests GC/finalizer draining after scoped allocations, but
+    the parser should not impose ordering on FINALIZER records.
+
+Major coverage
+--------------
+- async methods: void, Task, Task<T>, ValueTask, ValueTask<T>, custom task-like return type
+- await: Task/ValueTask/custom awaiters/dynamic await/configure-await/suspension in conditions
+- async lambdas, anonymous methods, local functions, method groups, delegates and events
+- async streams, await foreach, cancellation-aware async streams, await using / IAsyncDisposable
+- deliberate async faults before/after suspension, catch filters, rethrow, finally, aggregation
+- CancellationTokenSource, linked cancellation, registrations and cancellation races
+- Thread/ThreadStart/ParameterizedThreadStart, Start/Join, background threads, Interrupt/Yield/SpinWait
+- ThreadPool work, unsafe queueing, registered waits and timer callbacks
+- lock and Monitor Enter/Exit/TryEnter/Wait/PulseAll/reentrancy/exception release behavior
+- Interlocked operations, MemoryBarrier, Volatile reads/writes and legal volatile field types
+- ManualResetEvent, AutoResetEvent, ManualResetEventSlim, Semaphore, SemaphoreSlim
+- CountdownEvent, Barrier, Mutex including abandoned mutex behavior, WaitAny/WaitAll/SignalAndWait
+- ReaderWriterLockSlim and SpinLock
+- Task.Run, StartNew, continuations, WhenAll/WhenAny, TCS, LongRunning, attached child tasks,
+  nested Task<Task<T>> + Unwrap, synchronous Wait/Result/GetAwaiter().GetResult(), scheduler data
+- Parallel.For/ForEach/Invoke including Break and Stop
+- ConcurrentQueue/Stack/Bag/Dictionary and BlockingCollection
+- SynchronizationContext, ExecutionContext, AsyncLocal<T>, ThreadLocal<T>, [ThreadStatic]
+- intentional unsynchronized race versus Interlocked control
+- constructors/finalizers/base constructor parameter flow and private/protected/public access from workers
+- giant for -> while -> do -> if -> for -> while -> do -> switch -> try/catch/finally -> Task nesting
+- awaited expressions inside complex boolean short-circuit conditions and loop conditions
+- per-type for/while/do-while matrices for legal numeric/native/floating/decimal/char types,
+  plus bool/string state loops
+- switch statements and switch expressions across primitive, string, enum, object, dynamic,
+  struct, record and array/list-pattern inputs
+- constant, type/declaration, relational, logical, property, positional and list/slice patterns
+- generic declarations and async generic methods for every requested arity:
+    <T>
+    <T, TResult>
+    <T1, T2>
+    <T1, T2, TResult>
+    ...
+    <T1, ..., T10>
+    <T1, ..., T10, TResult>
+- generic position matrix: 20 canonical concrete type categories rotated through every input slot
+  at every arity 1..10, plus an independently rotated TResult slot (1300 position tests)
+- generic constraints, new(), class/struct/unmanaged/notnull, static-abstract generic operators
+- C# 11: >>> / >>>=, required/init, list patterns, raw strings, UTF-8 literals, generic attributes,
+  auto-default structs, ref fields/scoped refs, checked user-defined operators, static abstract members
+- unsafe pointer/address/dereference/stackalloc/function-pointer code executed from worker-thread tests
+- nullable/coalescing/null-conditional, tuples/deconstruction, ranges/indices, anonymous types,
+  iterator/yield/foreach, default interface methods, covariant returns, extension methods, partial types,
+  named/optional/params arguments, CallerArgumentExpression, interpolated-string handlers,
+  C# 10 lambda improvements, dynamic member dispatch, interpolation and nameof
+
+Generic canonical type-position set
+-----------------------------------
+bool, byte, sbyte, short, ushort, int, uint, long, ulong, nint, nuint, char,
+float, double, decimal, string, object, dynamic, SmallValue, WorkPayload.
+
+Validation performed
+--------------------
+- delimiter/comment/string structural scan: balanced
+- zero `using` directives detected
+- global `printf(...)` calls retained
+- no external source generator is required by the fixture itself
+
+A stock Roslyn compile was not available in the generation environment. The source intentionally
+assumes a global printf intrinsic, so normal Roslyn validation also requires adapting that intrinsic.

@@ -1,0 +1,26 @@
+// main.rc — RubyC host executable: calls the C library and the RubyC-built
+// library through identical [LibraryImport] stubs. Both are linked at
+// build time from .so files via --lib.
+namespace app {
+    class host {
+        // From native_add.so (built with cc).
+        [LibraryImport("native_add", EntryPoint = "add")]
+        int cadd(int a, int b);
+
+        // From libtestns.so (built by rubyc -O shared).
+        [LibraryImport("testns", EntryPoint = "add")]
+        int rcadd(int a, int b);
+
+        // Odd argument counts exercise the register-window alignment path.
+        [LibraryImport("native_add", EntryPoint = "inc")]
+        int cinc(int v);
+
+        [LibraryImport("testns", EntryPoint = "inc")]
+        int rcinc(int v);
+
+        int main() {
+            printf("{0} {1} {2} {3}", this.cadd(2, 3), this.rcadd(40, 2),
+                   this.cinc(9), this.rcinc(41));
+        }
+    }
+}

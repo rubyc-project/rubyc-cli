@@ -1,0 +1,40 @@
+[package]
+name = "rubyc-cli"
+version.workspace = true
+edition.workspace = true
+autotests = false
+
+[[bin]]
+name = "rubyc"
+path = "src/main.rs"
+
+[dependencies]
+rubyc-core = { path = "rubyc-core" }
+rubyc-target = { path = "rubyc-core/plugins/targets/rubyc-target" }
+rubyc-target-linux-x86_64 = { path = "rubyc-core/plugins/targets/rubyc-target-linux-x86_64" }
+# Never linked into the pipeline (main.rs wires Linux only): present so the
+# stub artifact exists when build.rs installs plugins.
+rubyc-target-windows-x86_64 = { path = "rubyc-core/plugins/targets/rubyc-target-windows-x86_64" }
+
+[dev-dependencies]
+rubyc-core = { path = "rubyc-core" }
+rubyc-target = { path = "rubyc-core/plugins/targets/rubyc-target" }
+rubyc-target-linux-x86_64 = { path = "rubyc-core/plugins/targets/rubyc-target-linux-x86_64" }
+
+[workspace]
+resolver = "2"
+members = [
+    "rubyc-core",
+    "rubyc-core/plugins/targets/rubyc-target",
+    "rubyc-core/plugins/targets/rubyc-target-linux-x86_64",
+    "rubyc-core/plugins/targets/rubyc-target-windows-x86_64",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+
+[profile.release]
+opt-level = 3
+debug = false
+strip = "symbols"

@@ -1,0 +1,3 @@
+[submodule "rubyc-core"]
+	path = rubyc-core
+	url = https://github.com/rubyc-project/rubyc-core.git

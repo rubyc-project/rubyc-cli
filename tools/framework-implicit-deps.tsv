@@ -1,0 +1,113 @@
+# Framework-implicit ruby_c deps: libraries whose types a lib uses WITHOUT any
+# csproj trace (no ProjectReference AND no PackageReference — they arrive via
+# the shared framework). Each E0025 "unknown name" discovery lands here once;
+# regen_rcp.sh and pull-dotnet.sh both consume this file so all future
+# (re)generations preserve the dep. Format: "<lib>\t<dep-lib>" (dep-lib must
+# be a pulled library dir name). Sorted by lib.
+#
+# System.ComponentModel.Composition uses Enumerable (System.Linq) and
+# Expression (System.Linq.Expressions) with no csproj trace (E0025).
+System.ComponentModel.Composition	System.Linq
+System.ComponentModel.Composition	System.Linq.Expressions
+# System.Configuration.ConfigurationManager uses Trace
+# (System.Diagnostics.TraceSource) and XmlNodeType (System.Private.Xml)
+# with no csproj trace (E0025).
+System.Configuration.ConfigurationManager	System.Diagnostics.TraceSource
+System.Configuration.ConfigurationManager	System.Private.Xml
+# ... plus TypeDescriptor (System.ComponentModel.TypeConverter) in its
+# configuration converters (E0025, second round).
+System.Configuration.ConfigurationManager	System.ComponentModel.TypeConverter
+# Microsoft.Extensions.Configuration.Binder likewise converts via
+# TypeDescriptor with no csproj trace (E0025).
+Microsoft.Extensions.Configuration.Binder	System.ComponentModel.TypeConverter
+# Microsoft.Extensions.Configuration.Xml uses CryptoStreamMode
+# (System.Security.Cryptography) and XmlResolver (System.Private.Xml)
+# with no csproj trace (E0025).
+Microsoft.Extensions.Configuration.Xml	System.Private.Xml
+Microsoft.Extensions.Configuration.Xml	System.Security.Cryptography
+# System.ServiceProcess.ServiceController derives Component
+# (System.ComponentModel.Primitives) with no csproj trace (E0025).
+System.ServiceProcess.ServiceController	System.ComponentModel.Primitives
+# System.CodeDom converts via TypeDescriptor
+# (System.ComponentModel.TypeConverter) with no csproj trace (E0025).
+System.CodeDom	System.ComponentModel.TypeConverter
+# System.Composition.Convention uses Enumerable (System.Linq) with no
+# csproj trace (E0025).
+System.Composition.Convention	System.Linq
+# Microsoft.XmlSerializer.Generator uses SHA512
+# (System.Security.Cryptography) with no csproj trace (E0025).
+Microsoft.XmlSerializer.Generator	System.Security.Cryptography
+# System.Composition.Hosting uses Expression (System.Linq.Expressions)
+# with no csproj trace (E0025).
+System.Composition.Hosting	System.Linq.Expressions
+# System.Data.Odbc derives DbCommand/DbConnection (System.Data.Common) via the
+# shared framework: ParameterDirection and friends have no csproj trace (E0025,
+# build-02).
+System.Data.Odbc	System.Data.Common
+# System.Data.OleDb likewise derives Db* (System.Data.Common) via the shared
+# framework (same shape as Odbc; proactive).
+System.Data.OleDb	System.Data.Common
+# System.Net.Http.WinHttpHandler derives HttpMessageHandler (System.Net.Http) and uses System.Buffers via shared framework (E0011).
+System.Net.Http.WinHttpHandler	System.Net.Http
+# System.IO.Packaging uses XmlWriter (System.Private.Xml) and ZipArchiveMode
+# (System.IO.Compression.ZipFile) with no csproj trace (E0025, build-02).
+System.IO.Packaging	System.IO.Compression
+System.IO.Packaging	System.IO.Compression.ZipFile
+System.IO.Packaging	System.Private.Xml
+System.IO.Ports	System.ComponentModel.Primitives
+System.IO.Ports	System.Net.Sockets
+# System.Resources.Extensions uses TypeDescriptor (TypeConverter),
+# FormatterAssemblyStyle/BinaryFormatter (Formatters) and the
+# Runtime.Serialization namespace (FormatterServices) with no csproj
+# trace (E0025, build-01). Its DeserializingResourceReader half comes
+# from CoreLib's dual-use shared ResourceReader.cs, fetched via the
+# new $(CoreLibSharedDir) branch in pull-dotnet.sh/rc-hooks.sh.
+System.Resources.Extensions	System.ComponentModel.TypeConverter
+System.Resources.Extensions	System.Runtime.Serialization.Formatters
+# System.Runtime.Caching uses NotifyFilters (System.IO.FileSystem.Watcher)
+# via the shared framework with no csproj trace (E0025, build-01).
+System.Runtime.Caching	System.IO.FileSystem.Watcher
+# System.Security.Cryptography.Cose uses HashAlgorithmName/IncrementalHash
+# (core Cryptography) with no csproj trace (E0025, build-01). MLDsaAlgorithm
+# rides along from the core fragment (Common shared source).
+System.Security.Cryptography.Cose	System.Security.Cryptography
+# System.Security.Cryptography.Pkcs/Xml likewise use core crypto names
+# (HashAlgorithmName, Oid) with no csproj trace (same shape; proactive).
+System.Security.Cryptography.Pkcs	System.Security.Cryptography
+System.Security.Cryptography.Xml	System.Security.Cryptography
+# System.Security.Cryptography.Xml uses XmlReader (System.Private.Xml)
+# and TraceEventType (System.Diagnostics.TraceSource) with no csproj
+# trace (E0025, build-01).
+System.Security.Cryptography.Xml	System.Diagnostics.TraceSource
+System.Security.Cryptography.Xml	System.Private.Xml
+# System.ServiceModel.Syndication uses XmlDictionaryReader/Writer
+# (System.Private.DataContractSerialization) with no csproj trace
+# (E0025, build-01).
+System.ServiceModel.Syndication	System.Private.DataContractSerialization
+# System.Private.DataContractSerialization's custom-prop sources
+# ($(XmlSources) etc., newly staged) use XmlNodeType/XmlConvert
+# (System.Private.Xml) with no csproj trace (E0025, build-02).
+System.Private.DataContractSerialization	System.Private.Xml
+# System.Runtime.Serialization.Schema uses DataContract
+# (System.Private.DataContractSerialization) with no csproj trace
+# (E0025, build-01).
+System.Runtime.Serialization.Schema	System.Private.DataContractSerialization
+# System.Windows.Extensions derives Component (ComponentModel.Primitives)
+# with no csproj trace (E0011, build-01).
+System.Windows.Extensions	System.ComponentModel.Primitives
+# System.DirectoryServices.Protocols derives CollectionBase (NonGeneric,
+# InnerList) with no csproj trace (E0025, build-01).
+System.DirectoryServices.Protocols	System.Collections.NonGeneric
+# System.DirectoryServices.Protocols uses AsnEncodingRules (Asn1)
+# with no csproj trace (E0025, build-02).
+System.DirectoryServices.Protocols	System.Formats.Asn1
+# System.DirectoryServices derives DirectoryObjectSecurity (AccessControl)
+# with no csproj trace (E0011, build-01).
+System.DirectoryServices	System.Security.AccessControl
+# System.Speech derives AsyncCompletedEventArgs (EventBasedAsync) and
+# KeyedCollection (ObjectModel) with no csproj trace (E0011, build-01).
+System.Speech	System.ComponentModel.EventBasedAsync
+System.Speech	System.ObjectModel
+# System.Security.Permissions derives EvidenceBase (AccessControl)
+# with no csproj trace (E0011, build-01).
+System.Security.Permissions	System.Security.AccessControl
