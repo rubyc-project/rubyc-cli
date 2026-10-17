@@ -36,6 +36,7 @@ mod stress_output;
 mod stress_test;
 
 // native targets and interop
+mod exe_static_vm;
 mod library_matrix;
 mod native_interop;
 mod target_os_consistency;

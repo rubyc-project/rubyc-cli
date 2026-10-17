@@ -3,12 +3,13 @@
 //!
 //! Every library in the install dir must be structurally sound: each
 //! current-version `.rci` decodes, each `.so` carries the ELF magic and
-//! the RubyC preamble, and every decoded lib is covered by
-//! `libraries/index.tsv` (the `using`-discovery source). sollibs
-//! installed without a sidecar (older backfills) only get the image
-//! checks; version-stale sidecars report without failing (the consume
-//! path falls back to sources for those) — the `.rci` gap closes as
-//! backfill re-emits them, it never fails this matrix.
+//! the RubyC preamble, every decoded lib is covered by
+//! `libraries/index.tsv` (the `using`-discovery source), and no image
+//! is absurdly large. sollibs installed without a sidecar (older
+//! backfills) only get the image checks; version-stale sidecars report
+//! without failing (the consume path falls back to sources for those)
+//! — the `.rci` gap closes as backfill re-emits them, it never fails
+//! this matrix.
 
 use std::collections::BTreeSet;
 
@@ -36,10 +37,10 @@ fn installed_library_artifacts_decode_and_index() {
     // sidecars (older toolchain) are stale, not corrupt: the consume
     // path falls back to sources for those, so the matrix reports
     // them without failing (re-emit via backfill closes the gap).
+    // Embedded fragments (no sidecar file) decode the same way.
     let mut decoded_libs = BTreeSet::new();
     let mut stale = Vec::new();
-    for path in &rcis {
-        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    for path in &rcis {        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         match rubyc::native::rci::decode(&bytes) {
             Ok(frag) => {
                 let stem = path
@@ -63,6 +64,18 @@ fn installed_library_artifacts_decode_and_index() {
     }
     // Images carry ELF magic plus the shared-library preamble
     // (jump-over-magic at 64, dog magic at 66 — same pins as interop).
+    // Embedded fragments join the decoded set for index coverage.
+    // Size budgets: files over WARN_BYTES print (visibility). Files over
+    // FAIL_BYTES fail — but only when their fragment decodes at the
+    // current toolchain version (new bloat is inexcusable; stale-toolchain
+    // artifacts predate the budgets and age out via backfill instead of
+    // failing the suite). A healthy lib is KBs to low MBs (a 4000-function
+    // fixture is under 1MB); nothing legitimate reaches 1GB — that scale
+    // means zero-fill or an accounting bug, the exact failure that once
+    // produced a 25GB install tree.
+    const WARN_BYTES: u64 = 64 << 20;
+    const FAIL_BYTES: u64 = 1 << 30;
+    let mut oversize_current = Vec::new();
     for path in &sos {
         let mut head = [0u8; 74];
         let mut file = std::fs::File::open(path).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
@@ -76,7 +89,33 @@ fn installed_library_artifacts_decode_and_index() {
             "dog magic in {}",
             path.display()
         );
+        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let size = bytes.len() as u64;
+        let mut current_version = false;
+        if size >= WARN_BYTES {
+            eprintln!("[matrix] large image {} ({} bytes)", path.display(), size);
+        }
+        if let Some(embedded) = rubyc::native::embedded::section_bytes(&bytes) {
+            match rubyc::native::rci::decode(embedded) {
+                Ok(frag) => {
+                    current_version = true;
+                    decoded_libs.insert(frag.lib_name);
+                }
+                Err(e) if e.contains("version") => {
+                    stale.push(path.display().to_string());
+                }
+                Err(e) => panic!("decode embedded in {}: {e}", path.display()),
+            }
+        }
+        if size >= FAIL_BYTES && current_version {
+            oversize_current.push(path.display().to_string());
+        }
     }
+    assert!(
+        oversize_current.is_empty(),
+        "oversize current-toolchain images (see [matrix] large lines): {}",
+        oversize_current.join(", ")
+    );
     // Index coverage: every decoded lib owns at least one row.
     let index = rubyc::native::index::ensure(&libraries).expect("index loads");
     let _ = index;

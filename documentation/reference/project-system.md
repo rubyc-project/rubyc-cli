@@ -50,7 +50,6 @@ Hooks are shell commands executed at specific points. They receive:
 |---|---|
 | `$RUBYC_PROJECT_NAME` | the `[meta] name` value |
 | `$RUBYC_OUTPUT_PATH` | where the binary was written |
-| `$RUBYC_CONFIG` | active profile name (`debug` or `release`) |
 
 Non-zero exit from a hook fails the build.
 
@@ -69,10 +68,17 @@ solution "MySolution"
     [hooks]
     pre-solution = "echo building all..."
 
-    [profiles]
-    debug = { defines = ["DEBUG"], optimize = false }
-    release = { defines = ["RELEASE"], optimize = true, strip = true }
+    [profile.release]
+    defines = ["RELEASE"]
+    optimize = true
+    strip = true
 ```
+
+Select a profile with `rubyc build MySolution.rcs --profile release`
+(unknown names fail loudly). Profile `defines` append to the
+invocation's, and `optimize`/`strip` OR into every member build —
+same as setting them per-project under `[build]` or passing
+`--optimize`/`--strip` on the CLI (explicit CLI flags always win).
 
 ## CLI
 

@@ -283,3 +283,505 @@ path = "scope_b/app.rcp"
         );
     }
 }
+
+#[test]
+fn install_libs_builds_stale_and_skips_fresh() {
+    // `install libs` on a miniature pulled tree: first run builds and
+    // installs both libs through their post-build hooks; second run
+    // reports everything up to date; touching one lib rebuilds only it.
+    // The child runs with its CWD inside the temp tree so pull/file
+    // discovery never escapes to the real checkout.
+    let workspace = Workspace::new("install_libs");
+    let tree = workspace.0.join("tree");
+    let libs = tree.join("dotnet-runtime/src/libraries");
+    for (lib, cls, ret) in [("liba", "A", 1), ("libb", "B", 2)] {
+        let dir = libs.join(lib);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("src/l.rc"),
+            format!("namespace {lib} {{ class {cls} {{ public int M() {{ return {ret}; }} }} }}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(format!("{lib}.rcp")),
+            format!(
+                r#"[meta]
+name = "{lib}"
+version = "1.0.0"
+[target]
+platform = "linux_x86_64"
+language = "rubyc"
+output = "shared"
+[build]
+sources = ["src/**/*.rc"]
+entry-point = ""
+defines = []
+[libs]
+ruby_c = []
+[hooks]
+post-build = 'mkdir -p "$RUBYC_BASE/libraries" && cp out/*.so "$RUBYC_BASE/libraries/" 2>/dev/null; cp out/*.rci "$RUBYC_BASE/libraries/" 2>/dev/null; true'
+"#
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        libs.join("dotnet-runtime.rcs"),
+        "solution mini\nversion = \"1\"\n[[project]]\npath = \"liba/liba.rcp\"\n\n[[project]]\npath = \"libb/libb.rcp\"\n",
+    )
+    .unwrap();
+    let base = workspace.0.join("base");
+    let installed = base.join("libraries");
+    let run_install = |extra: &[&str]| {
+        let mut cmd = Command::new(rubyc_path());
+        cmd.arg("install").arg("libs");
+        cmd.args(extra);
+        cmd.env("RUBYC_BASE", &base);
+        cmd.current_dir(&tree);
+        exec(&mut cmd)
+    };
+    // First run: builds + installs both (embedded by default, so no
+    // sidecar files land next to the images).
+    let out = run_install(&[]);
+    assert_eq!(out.code, 0, "install failed:\n{}", out.stderr_str());
+    for lib in ["liba", "libb"] {
+        assert!(installed.join(format!("{lib}.so")).is_file(), "{lib}.so installed");
+        assert!(
+            !installed.join(format!("{lib}.rci")).exists(),
+            "{lib}.rci must not exist when embedded"
+        );
+    }
+    let mtime = |lib: &str| {
+        std::fs::metadata(installed.join(format!("{lib}.so")))
+            .unwrap()
+            .modified()
+            .unwrap()
+    };
+    let (a0, b0) = (mtime("liba"), mtime("libb"));
+    // Second run: everything up to date, artifacts untouched.
+    let out = run_install(&[]);
+    assert_eq!(out.code, 0, "reinstall failed:\n{}", out.stderr_str());
+    assert!(out.stderr_str().contains("up to date"), "stderr: {}", out.stderr_str());
+    assert_eq!(mtime("liba"), a0, "fresh liba rebuilt");
+    assert_eq!(mtime("libb"), b0, "fresh libb rebuilt");
+    // Touch one lib: only it rebuilds.
+    std::fs::write(
+        libs.join("libb/src/l.rc"),
+        "namespace libb { class B { public int M() { return 2; } public int N() { return 3; } } }\n",
+    )
+    .unwrap();
+    let out = run_install(&[]);
+    assert_eq!(out.code, 0, "touch rebuild failed:\n{}", out.stderr_str());
+    assert_eq!(mtime("liba"), a0, "untouched liba rebuilt");
+    assert!(mtime("libb") > b0, "touched libb not rebuilt");
+}
+
+#[test]
+fn install_libs_missing_tree_errors_loudly() {
+    // No pulled tree and no pull script above an empty dir: loud error
+    // naming the fix, never a bare OS error (and no network touched).
+    let workspace = Workspace::new("install_no_tree");
+    let empty = workspace.0.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let mut cmd = Command::new(rubyc_path());
+    cmd.arg("install").arg("libs");
+    cmd.env("RUBYC_BASE", workspace.0.join("base"));
+    cmd.current_dir(&empty);
+    let out = exec(&mut cmd);
+    assert_eq!(out.code, 1, "must fail without a tree");
+    assert!(
+        out.stderr_str().contains("pull"),
+        "must name the fix, stderr: {}",
+        out.stderr_str()
+    );
+}
+
+#[test]
+fn embedded_types_consume_without_sources_or_sidecar() {
+    // Binary-only distribution: a library rebuilt with default embedding
+    // carries v2 types inside its `.so`; the stale v1 `.rci` file and
+    // deleted sources leave the embedded table as the only place the
+    // new member can come from. The consumer (dynamic, `using`, shared
+    // output so nothing executes) must build successfully.
+    let workspace = Workspace::new("embed_consume");
+    let base = workspace.0.join("base");
+    let libraries = base.join("libraries");
+    std::fs::create_dir_all(&libraries).unwrap();
+    let lib_dir = workspace.0.join("disco");
+    let lib_src = lib_dir.join("src");
+    std::fs::create_dir_all(&lib_src).unwrap();
+    let lib_rcp = lib_dir.join("disco.rcp");
+    let lib_project = r#"[meta]
+name = "disco"
+version = "1.0.0"
+[target]
+platform = "linux_x86_64"
+language = "rubyc"
+output = "shared"
+[build]
+sources = ["src/**/*.rc"]
+entry-point = ""
+defines = []
+[libs]
+ruby_c = []
+"#;
+    std::fs::write(&lib_rcp, lib_project).unwrap();
+    let build_lib = |env_base: &std::path::Path, extra: &[&str]| {
+        let mut cmd = Command::new(rubyc_path());
+        cmd.arg("build").arg(&lib_rcp).arg("-P").arg("-Q");
+        cmd.args(extra);
+        cmd.env("RUBYC_BASE", env_base);
+        exec(&mut cmd)
+    };
+    // v1 opted out: plain image + sidecar file.
+    std::fs::write(
+        lib_src.join("l.rc"),
+        "namespace DD { class C { public int answer() { return 42; } } }\n",
+    )
+    .unwrap();
+    let out = build_lib(&base, &["--no-embed-types"]);
+    assert_eq!(out.code, 0, "v1 lib build failed:\n{}", out.stderr_str());
+    std::fs::copy(lib_dir.join("out/disco.so"), libraries.join("disco.so")).unwrap();
+    std::fs::copy(lib_dir.join("out/disco.rci"), libraries.join("disco.rci")).unwrap();
+    // v2 embedded by default: installs only the image (stale v1 sidecar stays).
+    std::fs::write(
+        lib_src.join("l.rc"),
+        "namespace DD { class C { public int answer() { return 42; } public int answer2() { return 44; } } }\n",
+    )
+    .unwrap();
+    let out = build_lib(&base, &[]);
+    assert_eq!(out.code, 0, "v2 lib build failed:\n{}", out.stderr_str());
+    // The v2 out/ dir keeps the stale v1 sidecar (embed skips the
+    // write but never deletes): only the image carries v2 types.
+    std::fs::copy(lib_dir.join("out/disco.so"), libraries.join("disco.so")).unwrap();
+    // Binary-only: sources are gone; the stale file cannot supply answer2.
+    std::fs::remove_dir_all(&lib_dir).unwrap();
+    // Consumer references the v2-only member through `using`, no ruby_c.
+    let con_dir = workspace.0.join("con");
+    let con_src = con_dir.join("src");
+    std::fs::create_dir_all(&con_src).unwrap();
+    std::fs::write(
+        con_src.join("h.rc"),
+        "using DD;\nnamespace app { class Host { public int get() { C c = new C(); return c.answer2(); } } }\n",
+    )
+    .unwrap();
+    let con_rcp = con_dir.join("con.rcp");
+    std::fs::write(
+        &con_rcp,
+        r#"[meta]
+name = "con"
+version = "1.0.0"
+[target]
+platform = "linux_x86_64"
+language = "rubyc"
+output = "shared"
+[build]
+sources = ["src/**/*.rc"]
+entry-point = ""
+defines = []
+dynamic = true
+[libs]
+ruby_c = []
+"#,
+    )
+    .unwrap();
+    let mut cmd = Command::new(rubyc_path());
+    cmd.arg("build")
+        .arg(&con_rcp)
+        .arg("-P")
+        .arg("-Q");
+    cmd.env("RUBYC_BASE", &base);
+    let out = exec(&mut cmd);
+    assert_eq!(
+        out.code, 0,
+        "embedded consume failed (answer2 only exists in the image table):\n{}",
+        out.stderr_str()
+    );
+}
+
+#[test]
+fn no_embed_types_keeps_legacy_shape() {
+    // `--no-embed-types` is purely subtractive for plain C/C++ hosts:
+    // kind stays `SharedLibrary`, 9 sections, payload at 13 — the exact
+    // pre-table layout. (Byte-equality across builds isn't asserted;
+    // timestamps aside, this pins every structural byte instead.)
+    let workspace = Workspace::new("no_embed");
+    let dir = workspace.0.join("lib");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("src/l.rc"),
+        "namespace DD { class C { public int answer() { return 42; } } }\n",
+    )
+    .unwrap();
+    let rcp = dir.join("lib.rcp");
+    std::fs::write(
+        &rcp,
+        r#"[meta]
+name = "lib"
+version = "1.0.0"
+[target]
+platform = "linux_x86_64"
+language = "rubyc"
+output = "shared"
+[build]
+sources = ["src/**/*.rc"]
+entry-point = ""
+defines = []
+[libs]
+ruby_c = []
+"#,
+    )
+    .unwrap();
+    let mut cmd = Command::new(rubyc_path());
+    cmd.arg("build").arg(&rcp).arg("-P").arg("-Q").arg("--no-embed-types");
+    let out = exec(&mut cmd);
+    assert_eq!(out.code, 0, "build failed:\n{}", out.stderr_str());
+    let bytes = std::fs::read(dir.join("out/lib.so")).expect("image written");
+    assert_eq!(bytes[74], 0x03, "kind stays SharedLibrary");
+    let shnum = u16::from_le_bytes([bytes[60], bytes[61]]);
+    assert_eq!(shnum, 9, "section count stays legacy");
+    // No table: payload starts right after the 13-byte preamble...
+    // (kind 0x03 carries no length field, so offset 77 is payload).
+    assert_eq!(bytes[64..66], [0xEB, 0x08], "preamble jump intact");
+}
+
+/// TOML-only builds match flag-spelled builds byte-for-byte: the same
+/// project without `[build]` keys built with `--optimize` must equal the
+/// project with `optimize = true` built with no flags.
+#[test]
+fn toml_only_build_matches_flag_spelled_build() {
+    let workspace = Workspace::new("toml_parity");
+    workspace.write(
+        "main.rc",
+        r#"namespace parity { class Program { int main() { printf("parity"); return 0; } } }"#,
+    );
+    let rcp = workspace.write(
+        "app.rcp",
+        r#"[meta]
+name = "parity"
+version = "1.0.0"
+[target]
+platform = "linux_x86_64"
+output = "shared"
+[build]
+sources = ["main.rc"]
+entry-point = "main"
+"#,
+    );
+    // Flag-spelled build first; stash its bytes.
+    let out = exec(
+        Command::new(rubyc_path())
+            .arg("build")
+            .arg(&rcp)
+            .arg("--optimize"),
+    );
+    assert_eq!(out.code, 0, "flag build failed:\n{}", out.stderr_str());
+    let flagged = std::fs::read(workspace.0.join("out/parity.so")).expect("flag image");
+    // Same project plus the TOML key, built with no flags.
+    std::fs::write(
+        &rcp,
+        r#"[meta]
+name = "parity"
+version = "1.0.0"
+[target]
+platform = "linux_x86_64"
+output = "shared"
+[build]
+sources = ["main.rc"]
+entry-point = "main"
+optimize = true
+"#,
+    )
+    .unwrap();
+    let out = exec(Command::new(rubyc_path()).arg("build").arg(&rcp));
+    assert_eq!(out.code, 0, "toml build failed:\n{}", out.stderr_str());
+    let from_toml = std::fs::read(workspace.0.join("out/parity.so")).expect("toml image");
+    assert_eq!(
+        flagged, from_toml,
+        "TOML-only and flag-spelled builds are byte-identical"
+    );
+}
+
+/// Explicit CLI `-O` overrides the project's `[target] output`.
+#[test]
+fn cli_output_overrides_toml_output() {
+    let workspace = Workspace::new("output_override");
+    workspace.write(
+        "main.rc",
+        r#"namespace ovr { class Program { int main() { printf("ovr"); return 0; } } }"#,
+    );
+    let rcp = workspace.write(
+        "app.rcp",
+        r#"[meta]
+name = "ovr"
+version = "1.0.0"
+[target]
+platform = "linux_x86_64"
+output = "shared"
+[build]
+sources = ["main.rc"]
+entry-point = "main"
+"#,
+    );
+    // TOML alone: shared library.
+    let out = exec(Command::new(rubyc_path()).arg("build").arg(&rcp));
+    assert_eq!(out.code, 0, "toml build failed:\n{}", out.stderr_str());
+    let so = std::fs::read(workspace.0.join("out/ovr.so")).expect("shared image");
+    assert_eq!(&so[0..4], b"\x7fELF");
+    // CLI `-O exe` wins over TOML `output = "shared"`: an ET_EXEC
+    // executable (e_type == 2). `-o` pins the path (project exe
+    // outputs default to the caller cwd, not `out/`).
+    let exe_path = workspace.0.join("out/ovr");
+    let out = exec(
+        Command::new(rubyc_path())
+            .arg("build")
+            .arg(&rcp)
+            .arg("-O")
+            .arg("exe")
+            .arg("-o")
+            .arg(&exe_path),
+    );
+    assert_eq!(out.code, 0, "override build failed:\n{}", out.stderr_str());
+    let exe = std::fs::read(&exe_path).expect("exe image");
+    assert_eq!(&exe[0..4], b"\x7fELF");
+    assert_eq!(
+        u16::from_le_bytes([exe[16], exe[17]]),
+        2,
+        "CLI -O exe overrides TOML shared"
+    );
+}
+
+/// Same-path cross-assembly collision: the main project's entry carries
+/// the only declared ctor while the dependency's same-path entry has the
+/// implicit one. `new Dup()` in main must bind the dependency's implicit
+/// ctor (MLC vs CoreLib `System.DefaultBinder`) instead of erroring
+/// `ctor_arity` against the merged view.
+#[test]
+fn same_path_collision_constructs_implicit_dep_ctor() {
+    let workspace = Workspace::new("collision");
+    workspace.write(
+        "dep/dep.rc",
+        "namespace Sys { class Dup { } }",
+    );
+    workspace.write(
+        "dep/dep.rcp",
+        r#"[meta]
+name = "collisiondep"
+version = "1.0.0"
+[target]
+platform = "linux_x86_64"
+output = "shared"
+[build]
+sources = ["dep.rc"]
+entry-point = ""
+"#,
+    );
+    workspace.write(
+        "main.rc",
+        r#"namespace Sys { partial class Dup {
+            public Dup(int x) { }
+            static Dup s = new Dup();
+        } }
+        namespace t { class Program { int main() { return 0; } } }"#,
+    );
+    let rcp = workspace.write(
+        "app.rcp",
+        r#"[meta]
+name = "collisionmain"
+version = "1.0.0"
+[target]
+platform = "linux_x86_64"
+output = "shared"
+[build]
+sources = ["main.rc"]
+entry-point = "main"
+[libs]
+ruby_c = ["dep/dep.rcp"]
+"#,
+    );
+    let out = exec(Command::new(rubyc_path()).arg("build").arg(&rcp));
+    assert_eq!(
+        out.code, 0,
+        "same-path collision must bind the implicit ctor:\n{}",
+        out.stderr_str()
+    );
+    let image = std::fs::read(workspace.0.join("out/collisionmain.so")).expect("image");
+    assert_eq!(&image[0..4], b"\x7fELF");
+}
+#[test]
+fn solution_profile_applies_defines_and_optimize() {
+    let workspace = Workspace::new("profile");
+    workspace.write(
+        "main.rc",
+        r#"namespace prof { class Program { int main() {
+#if DEBUG
+            printf("debug");
+#else
+            printf("plain");
+#endif
+            return 0; } } }"#,
+    );
+    workspace.write(
+        "app.rcp",
+        r#"[meta]
+name = "prof"
+version = "1.0.0"
+[target]
+platform = "linux_x86_64"
+output = "shared"
+[build]
+sources = ["main.rc"]
+entry-point = "main"
+"#,
+    );
+    let solution = workspace.write(
+        "workspace.rcs",
+        r#"solution "Workspace"
+[[project]]
+path = "app.rcp"
+[profile.release]
+defines = ["DEBUG"]
+optimize = true
+"#,
+    );
+    // Plain solution build: no profile.
+    let out = exec(Command::new(rubyc_path()).arg("build").arg(&solution));
+    assert_eq!(out.code, 0, "plain build failed:\n{}", out.stderr_str());
+    let plain = std::fs::read(workspace.0.join("out/prof.so")).expect("plain image");
+    assert!(
+        plain.windows(5).any(|w| w == b"plain"),
+        "unprofiled build carries the non-DEBUG string"
+    );
+    // Profiled build: DEBUG string present instead.
+    let out = exec(
+        Command::new(rubyc_path())
+            .arg("build")
+            .arg(&solution)
+            .arg("--profile")
+            .arg("release"),
+    );
+    assert_eq!(out.code, 0, "profile build failed:\n{}", out.stderr_str());
+    let profiled = std::fs::read(workspace.0.join("out/prof.so")).expect("profile image");
+    assert!(
+        profiled.windows(5).any(|w| w == b"debug"),
+        "profile defines (DEBUG) applied"
+    );
+    assert!(
+        !profiled.windows(5).any(|w| w == b"plain"),
+        "non-DEBUG branch compiled out"
+    );
+    // Unknown profile names fail loudly, never silently misbuild.
+    let out = exec(
+        Command::new(rubyc_path())
+            .arg("build")
+            .arg(&solution)
+            .arg("--profile")
+            .arg("nope"),
+    );
+    assert_ne!(out.code, 0, "unknown profile must fail");
+    assert!(
+        out.stderr_str().contains("unknown solution profile"),
+        "loud error names the profile: {}",
+        out.stderr_str()
+    );
+}

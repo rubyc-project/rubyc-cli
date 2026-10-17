@@ -159,6 +159,10 @@ code, switch patterns, out-vars, discards, `is`-patterns, local functions,
 `using` aliases, string interpolation, indexers, and explicit interface
 implementations.
 
+Array and string conversions to `Span<T>` / `ReadOnlySpan<T>` apply to
+local declarations and later assignments. Array spans retain a view of the
+array payload, so writes through the span update the original array.
+
 ## 🖥️ CLI tour
 
 ```bash
@@ -169,6 +173,7 @@ rubyc compile -O shared lib.rc -o librc.so    # C hosts: dlopen/dlsym
 rubyc compile -O static lib.rc -o librc.a     # static archive for --lib linking
 rubyc build solution.rcs --jobs 6             # concurrent project builds
 rubyc build lib.rcp --rci-only                # just the .rci fragment, no codegen
+rubyc build program.rc -o app --optimize --strip  # slim release image: drop dead functions and symbol tables
 rubyc lint program.rc             # lint diagnostics without compiling
 rubyc dump program.rc             # AST inspection
 rubyc dump program.rc -v          # AST + IR + machine code
@@ -195,10 +200,28 @@ rubyc build --lib libm.a host.rc -o host && ./host    # same from a static archi
 cc consumer.c -ldl -o consumer && ./consumer          # C calls librc.so's exports
 ```
 
-Libraries install to `~/.local/share/rubyc/libraries/` (`.so` plus `.rci`
-sidecars; `static/` holds `.a` archives; `index.tsv` maps types to owners).
-A dynamic project needs no `ruby_c` entry for a `using` the index owns
-alone — the fragment auto-links; two owners fail loudly instead.
+Libraries install to `~/.local/share/rubyc/libraries/` (images carry
+their type tables inside; `static/` holds `.a` archives; `index.tsv`
+maps types to owners). A dynamic project needs no `ruby_c` entry for
+a `using` the index owns alone — the fragment auto-links; two owners
+fail loudly instead. Full contract:
+[documentation/compiler/library-format.md](documentation/compiler/library-format.md).
+
+```bash
+rubyc install libs                        # pull (if needed), build stale libs, install
+rubyc install libs --format both          # shared + static passes
+rubyc install libs --format both --jobs 6 # concurrent backfill
+```
+
+`install libs` is idempotent per stage: it pulls only when the tree is
+missing or behind upstream, and rebuilds only libraries whose installed
+image predates their inputs (same hash the fragment consume path checks).
+Fragments ride inside the image by default (post-magic table in `.so`,
+`<lib>.rci` member in `.a`) — consumers prefer embedded bytes, then the
+legacy section/sidecar forms. `--no-embed-types` builds pure-ABI images
+for plain C/C++ hosts. Full runtime
+backfill additionally waits on compiler parity (Track A): libraries whose
+sources don't lower yet fail their builds loudly instead of installing.
 
 ## 📖 Help output
 
@@ -231,7 +254,7 @@ Global Options:
   -q, --quiet               Suppress informational output
       --base <DIR>          Target installation root; its targets/ is scanned (env: RUBYC_BASE)
       --targets-dir <DIR>   Target discovery directory (beats --base; env: RUBYC_TARGETS_DIR)
-  -t, --target <NAME>       Select compilation target by name (default: host)
+  -t, --target <NAME>       Select compilation target by name (default: host) (TOML: [build] target = "..."; CLI wins)
       --no-color            Disable colored output
       --error-format <FMT>  Diagnostic style: text (default), json, json-pretty
       --warn <LINT>         Raise a lint to warning (e.g. --warn W0001)
@@ -262,24 +285,28 @@ Usage: rubyc build [OPTIONS] [FILE]
 Options:
   -i, --in <FILE>              Input path ('-' or omitted reads stdin)
   -o, --out <FILE>             Output path ('-' means stdout)
-  -O, --out-format <FMT>       bytecode, bytecode-shebang, base64-bytecode, exe (default), shared, static
+  -O, --out-format <FMT>       bytecode, bytecode-shebang, base64-bytecode, exe (default), shared, static (TOML: [target] output; CLI wins)
   -B, --base64                 I/O bytes are base64 text
   -b, --bytecode               Shorthand for --out-format bytecode
       --shebang <INTERPRETER>  Wrap bytecode output in a '#!' interpreter line
   -g, --debug                  Emit debug symbols (.symtab) in ELF output
   -m, --no-magic               Omit the 🐕🇨 RubyC preamble from all emitted artifacts (AST, IR, ELF)
-  -l, --lib <FILE>             Link a library file (.so body extraction, .a static merge); repeatable
-      --rci-only               Emit only the .rci sidecar, skipping codegen and image writes
-      --jobs <N>               Solution build parallelism (default 1)
   -P, --skip-pre-hook          Skip pre-build hooks (dev-loop only: assumes transient sources already materialized)
   -Q, --skip-post-hook         Skip post-build hooks (dev-loop only: leaves transient sources in place)
+      --rci-only               Emit only the .rci sidecar, skipping codegen and image writes (fragment backfill) (TOML: [build] rci-only = true)
+  -j, --jobs <N>               Solution build parallelism: how many projects build concurrently (default 1) (TOML: [build] jobs = N; CLI wins)
+      --no-embed-types         Skip embedding the library's type fragment (pure-ABI image for plain C/C++ hosts)
+  -l, --lib <FILE>             Link a library file (.so body extraction, .a static merge); repeatable (TOML: [libs] ruby_c)
+      --optimize               Function-level dead-code elimination: drop functions unreachable from the entry point, exports, @init, and address-taken references (TOML: [build] optimize = true)
+      --strip                  Drop .symtab/.strtab from executable images (shared libraries always keep .dynsym) (TOML: [build] strip = true)
+      --profile <NAME>         Solution build profile: merge the named [profile] section's defines/optimize/strip into every project
 
 Global Options:  -D, --define <SYM>       Seed a #If symbol (repeatable)
   -v, --verbose            Print stage-by-stage progress to stderr
   -q, --quiet              Suppress informational output
       --base <DIR>         Target installation root; its targets/ is scanned (env: RUBYC_BASE)
       --targets-dir <DIR>  Target discovery directory (beats --base; env: RUBYC_TARGETS_DIR)
-  -t, --target <NAME>      Select compilation target by name (default: host)
+  -t, --target <NAME>      Select compilation target by name (default: host) (TOML: [build] target; CLI wins)
 
 EXAMPLES:
   rubyc build hello.rc                    writes ./hello (exe default)
@@ -410,18 +437,19 @@ tolerance; same-name disambiguation (nesting, arity, method-anchored entries);
 bytecode v1 round-trips; CLI (`build/run/lint/dump/list/...`, JSON errors,
 i18n); `--skip-pre-hook`/`--skip-post-hook` dev flags.
 
-**In progress — the `dotnet/runtime` campaign:**
+**Done — the `dotnet/runtime` campaign:**
 `tools/pull-dotnet.sh` sparse-pulls 181 libraries and emits `.rcp`/`.rcs`
 per library; ~50 `src/coreclr` partials are staged for `System.Private.CoreLib`.
-Parse/scan/semantic gates are at zero; lowering is driven one blocking error
-at a time (currently deep into `System.Private.CoreLib`, ~2.5 min per full
-measurement with the release binary).
+All 65 buildable libraries compile and install (179/179 artifacts, plus
+178/178 static archives); parse/scan/semantic/lowering gates are at zero
+across the set; standalone static executables link against
+`examples/exe_smoke/host_stubs.c` for CoreCLR runtime natives.
 
 ## ✅ Todo: complete vs remaining
 
 ### ✅ Done
 - [x] Lexer/parser for the full C# surface above (1100+ tests and counting:
-      790 core, 93 x86-64 backend, 6 windows stub, 254 CLI end-to-end)
+      820 core, 94 x86-64 backend, 6 windows stub, 265+ CLI end-to-end)
 - [x] Semantic analysis: scopes, type tables, inheritance, access, const folding
 - [x] Lowering: calls (static/virtual/import), ctors, fields, properties, switches
 - [x] Overload + extension + generic-tolerant resolution
@@ -430,23 +458,39 @@ measurement with the release binary).
 - [x] x86-64 backend: encoder, regalloc, ELF images, JIT loader
 - [x] Pull script + per-library `.rcp`/`.rcs` generation (181 libs)
 - [x] Static archives (`.a`) + static link step; `--lib` works for `.so` and `.a`
+- [x] 178/178 static archives installed (`libraries/static/`); standalone
+      static executables (`ET_EXEC`, freestanding) link real library code
+      with CoreCLR runtime natives from `examples/exe_smoke/host_stubs.c`
 - [x] `using`-driven discovery via `libraries/index.tsv` (single-owner auto-link)
 - [x] Backfill speed: `--rci-only` fragments, `--jobs` parallel solution builds
+- [x] `install libs` cascade (pull-if-missing → build-if-stale → install, `--format shared|static|both`)
+- [x] `--embed-types` by default (post-magic table in `.so`, member in `.a`); `--no-embed-types` for pure-ABI C/C++ hosts
 - [x] Flattened install layout (`libraries/`, `static/` subdir for archives)
 - [x] CoreCLR partial staging for System.Private.CoreLib
 - [x] Dev-loop flags (`--skip-pre-hook`, `--skip-post-hook`)
+- [x] Full runtime backfill: all 65 buildable pulled libraries compile and
+      install (179/179 artifacts; only `Common`, `HostFactoryResolver`,
+      `DI.Specification.Tests` excluded as unbuildable by design)
+- [x] Parallel-build safety: per-directory flock, atomic staging
+      (temp+rename), post-build never deletes transient sources
+- [x] `--optimize` (function-level dead-code elimination) + `--strip`
+      (drop `.symtab`/`.strtab`); `[build] optimize/strip` project keys
+      and `--profile` solution profiles
 
-### ⬜ Remaining — to compile the dotnet runtime
-- [ ] Drive `System.Private.CoreLib` lowering to zero errors (in progress —
-      one blocking construct at a time; parse/scan/semantic already zero)
-- [ ] Backend validation for CoreLib scale (vtable layout, field offsets,
-      image emission for ~1800 classes — untested at this size)
-- [ ] Implicit CoreLib reference for dependent libraries (`Debug`,
-      `ArgumentNullException`, etc. need no explicit `ruby_c` entry —
-      `using`-driven discovery covers installed libraries today)
-- [ ] Same measure-fix loop for the other 180 pulled libraries
+### ⬜ Remaining — runtime correctness and language parity
+- [x] Drive `System.Private.CoreLib` lowering to zero errors (builds and installs)
+- [x] Backend validation for CoreLib scale (vtable layout, field offsets,
+      image emission for ~1800 classes — built, installed, matrix-green)
+- [x] Implicit CoreLib reference for dependent libraries (`using`-driven
+      discovery covers installed libraries; no explicit `ruby_c` needed)
+- [x] Same measure-fix loop for the other pulled libraries (65/65 built)
 - [ ] Execute + verify built artifacts on the VM (`scp`/`ssh rubyc-dev`
-      workflow: build locally, run natively, compare output)
+      workflow: build locally, run natively, compare output — VM suites
+      green)
+- [x] Standalone-exe smoke on the VM (`tests/exe_static_vm.rs`: hello,
+      hashing `38600999`, console `hello-static-exe`, optimize/strip
+      parity — all green via `examples/exe_smoke/host_stubs.c` shims
+      plus `RUBYC_ALLOW_MISSING_IMPORTS=1` for uncalled PAL imports)
 - [ ] Runtime-correctness workstream (current placeholders — delegates,
       explicit accessors, P/Invoke bodies, decimal precision — need real
       implementations before programs run *correctly*, not just compile)
@@ -466,6 +510,31 @@ rubyc lint                      # auto-detect and lint nearest project
 
 Project files are TOML (`.rcp`); solutions group projects in `.rcs` files.
 See [documentation/](documentation/README.md) for the full schema.
+
+Every CLI build flag has a TOML spelling, so a solution builds from the
+file alone with byte-identical artifacts to the flag-spelled invocation;
+explicit CLI flags always win over the file:
+
+```toml
+[build]
+jobs = 6            # --jobs N (solution parallelism)
+target = "linux_x86_64"  # --target NAME
+rci-only = true     # --rci-only (fragment backfill)
+optimize = true     # --optimize (function-level DCE)
+strip = true        # --strip (drop .symtab/.strtab)
+[target]
+output = "shared"   # -O/--out-format (exe, shared, static, ...)
+[libs]
+ruby_c = ["System.Text.Json"]  # like --lib, but project references
+```
+
+```toml
+# solution.rcs
+[profile.release]   # selected with: rubyc build solution.rcs --profile release
+defines = ["DEBUG"]
+optimize = true
+strip = true
+```
 
 ## 🎯 Target discovery
 

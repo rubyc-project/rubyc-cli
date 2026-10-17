@@ -17,7 +17,7 @@ mkdir -p "$B/System" "$B/System/Runtime/CompilerServices" \
   "$B/Internal/Runtime/InteropServices" "$B/Internal/Runtime/CompilerHelpers" \
   "$B/Internal" "$B/Interop/Unix" "$B/System/Collections/Generic" \
   "$B/System/Runtime/ExceptionServices" "$B/System/Runtime/InteropServices/CustomMarshalers"
-cp_if_exists() { [ -f "$2" ] && cp "$2" "$3"; }
+cp_if_exists() { [ -f "$2" ] && { tmp="$3.tmp.$$"; cp "$2" "$tmp" && mv "$tmp" "$3"; }; }
 for f in String.CoreCLR Enum.CoreCLR Array.CoreCLR RuntimeHandles Exception.CoreCLR \
     Buffer.CoreCLR RuntimeType.CoreCLR Type.CoreCLR Math.CoreCLR MathF.CoreCLR Delegate.CoreCLR \
     RuntimeType.GenericCache RuntimeType.BoxCache RuntimeType.CreateUninitializedCache AppContext.CoreCLR GC.CoreCLR Object.CoreCLR Environment.CoreCLR \

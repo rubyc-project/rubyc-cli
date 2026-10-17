@@ -9,6 +9,10 @@
 # Expression (System.Linq.Expressions) with no csproj trace (E0025).
 System.ComponentModel.Composition	System.Linq
 System.ComponentModel.Composition	System.Linq.Expressions
+# System.ComponentModel.TypeConverter's vendored XComponentModel.cs calls
+# XElement.ToString(SaveOptions) — the XDocument facade forwards to
+# System.Private.Xml.Linq, which no csproj names (E0025).
+System.ComponentModel.TypeConverter	System.Private.Xml.Linq
 # System.Configuration.ConfigurationManager uses Trace
 # (System.Diagnostics.TraceSource) and XmlNodeType (System.Private.Xml)
 # with no csproj trace (E0025).

@@ -81,11 +81,16 @@ desktop.ini
 *.pyc
 __pycache__/
 
-# ---------- Agent / AI tooling state ----------
+# ---------- Agent / AI tooling state (never committed) ----------
 TODO.md
 AGENTS.md
+MEMORY.md
+GEMINI.md
+CODEX.md
+CLAUDE.md
 .kilo
 .opencode
+.opencode/
 .sisyphus
 .cursor
 .cursor/
@@ -94,8 +99,15 @@ AGENTS.md
 .aider*
 .rules
 .rules/
-CODEX.md
-CLAUDE.md
+.ai
+.ai/
+.windsurf
+.windsurf/
+.github/copilot-instructions.md
+
+# ---------- Local scratch: dev probes / mini-repros (not sources) ----------
+.probe/
+.probe/**
 
 # ---------- Secrets / env ----------
 .env

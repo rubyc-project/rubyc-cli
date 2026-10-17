@@ -34,7 +34,12 @@ rubyc <command> [flags]
 | `-O FMT` | `--out-format` | `bytecode` · `bytecode-shebang` · `base64-bytecode` · `exe` · `shared` | output format |
 | `-B` | `--base64` | — | base64-encode/decode bytecode (text-pipe safe) |
 | | `--shebang[=INTERP]` | interpreter line | prepend `#!/usr/bin/env rubyc` (default) to bytecode |
-| | `--lib PATH` | `.so` path, repeatable | link `[LibraryImport]` stubs against these objects |
+| | `--lib PATH` | `.so`/`.a` path, repeatable | link `[LibraryImport]` stubs against these objects (TOML: `[libs] ruby_c`) |
+| `-j N` | `--jobs` | count | solution build parallelism (TOML: `[build] jobs`; CLI wins) |
+| | `--rci-only` | — | emit only the `.rci` sidecar, skipping codegen (TOML: `[build] rci-only`) |
+| | `--optimize` | — | function-level dead-code elimination (TOML: `[build] optimize`) |
+| | `--strip` | — | drop `.symtab`/`.strtab` from executables (TOML: `[build] strip`) |
+| | `--profile NAME` | profile name | solution build profile from `.rcs` `[profile.NAME]` |
 | | `--error-format FMT` | `text` · `json` · `json-pretty` | diagnostic rendering (see below) |
 | | `--no-color` | — | disable ANSI colors (auto-off when piped or `NO_COLOR` set) |
 | | `--define SYM` | repeatable | seed preprocessor symbols for `#If` |
@@ -217,6 +222,9 @@ output = "exe"
 
 [build]
 sources = ["main.rc"]
+# Every CLI build flag has a TOML spelling (explicit CLI flags win):
+# jobs, target, rci-only, output ([target]), optimize, strip.
+# [libs] ruby_c covers --lib. See `rubyc build --help` (TOML: … notes).
 
 [hooks]
 pre-build = "echo starting"

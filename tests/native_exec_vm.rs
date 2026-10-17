@@ -36,6 +36,82 @@ fn run_src(source: &str) -> crate::tests::common::Outcome {
     build_and_run_vm(source, &[], None)
 }
 
+/// `--optimize` / `--strip` parity: the optimized and stripped images
+/// behave identically on the VM, are never larger, and the stripped
+/// image (no `.symtab`) is strictly smaller.
+#[test]
+fn vm_optimize_strip_parity_and_shrink() {
+    use std::os::unix::fs::PermissionsExt;
+    let source = r#"namespace t { class c {
+        int main() { printf("opt"); return 0; }
+        static int dead() { return 1; }
+    } }"#;
+    let unit = parser::parse(source).expect("must parse");
+    let dir = std::env::temp_dir().join("rubyc_vm_exe_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let build = |tag: &str, opts: rubyc::native::EmitOptions| -> std::path::PathBuf {
+        let exe = dir.join(format!("vmopt-{}_{}_{n}", std::process::id(), tag));
+        let bytes = native::compile_to_bytes_with_libs_preamble_opts(
+            &unit,
+            &BACKEND,
+            &IMAGE_WRITER,
+            &[],
+            true,
+            &[],
+            opts,
+        )
+        .expect("compilation should succeed");
+        std::fs::write(&exe, &bytes).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        exe
+    };
+    let plain = build(
+        "plain",
+        rubyc::native::EmitOptions {
+            optimize: false,
+            strip: false,
+        },
+    );
+    let opt = build(
+        "opt",
+        rubyc::native::EmitOptions {
+            optimize: true,
+            strip: false,
+        },
+    );
+    let stripped = build(
+        "stripped",
+        rubyc::native::EmitOptions {
+            optimize: false,
+            strip: true,
+        },
+    );
+    let plain_len = std::fs::metadata(&plain).unwrap().len();
+    let opt_len = std::fs::metadata(&opt).unwrap().len();
+    let stripped_len = std::fs::metadata(&stripped).unwrap().len();
+    assert!(
+        opt_len <= plain_len,
+        "optimized image never larger: {opt_len} vs {plain_len}"
+    );
+    assert!(
+        stripped_len < plain_len,
+        "stripped image strictly smaller: {stripped_len} vs {plain_len}"
+    );
+    let a = vm_exec(&plain, &[], None);
+    let b = vm_exec(&opt, &[], None);
+    let c = vm_exec(&stripped, &[], None);
+    let _ = std::fs::remove_file(&plain);
+    let _ = std::fs::remove_file(&opt);
+    let _ = std::fs::remove_file(&stripped);
+    assert_eq!(a.code, 0, "plain stderr: {}", a.stderr_str());
+    assert_eq!(a.stdout_str(), "opt");
+    assert_eq!(b.stdout_str(), a.stdout_str(), "optimize keeps behavior");
+    assert_eq!(b.code, a.code);
+    assert_eq!(c.stdout_str(), a.stdout_str(), "strip keeps behavior");
+    assert_eq!(c.code, a.code);
+}
+
 #[test]
 fn vm_exit_zero() {
     let out = run_src("namespace t { class c { int main() { return 0; } } }");
@@ -178,13 +254,16 @@ fn vm_infinite_loop_times_out_remotely() {
 }
 
 #[test]
-fn vm_argv_length_counts_prog_plus_user_args() {
+fn vm_argv_length_counts_user_args_only() {
+    // Real .NET `Main(string[])` excludes the program name (only
+    // `Environment.GetCommandLineArgs()` keeps it); the old pinning
+    // recorded whatever the implementation did, not the contract.
     let out = build_and_run_vm(
         r#"namespace t { class c { int main(string[] args) { return args.Length; } } }"#,
         &["a", "bb", "ccc"],
         None,
     );
-    assert_eq!(out.code, 4, "stderr: {}", out.stderr_str());
+    assert_eq!(out.code, 3, "stderr: {}", out.stderr_str());
 }
 
 #[test]
@@ -193,7 +272,7 @@ fn vm_argv_elements_print_verbatim() {
     // once loaded each char into al while rax held the string object,
     // rewriting the pointer's low byte and scattering every element.
     let out = build_and_run_vm(
-        r#"namespace t { class c { int main(string[] args) { printf("{0}|{1}", args[1], args[2]); return 0; } } }"#,
+        r#"namespace t { class c { int main(string[] args) { printf("{0}|{1}", args[0], args[1]); return 0; } } }"#,
         &["hello", "world"],
         None,
     );
@@ -202,13 +281,13 @@ fn vm_argv_elements_print_verbatim() {
 }
 
 #[test]
-fn vm_argv_no_user_args_gives_length_one() {
+fn vm_argv_no_user_args_gives_empty() {
     let out = build_and_run_vm(
         r#"namespace t { class c { int main(string[] args) { return args.Length; } } }"#,
         &[],
         None,
     );
-    assert_eq!(out.code, 1, "stderr: {}", out.stderr_str());
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr_str());
 }
 
 #[test]
@@ -267,4 +346,239 @@ fn vm_static_archive_links_and_calls() {
     let _ = std::fs::remove_file(&exe);
     assert_eq!(out.code, 0, "stderr: {}", out.stderr_str());
     assert_eq!(out.stdout_str(), "42");
+}
+
+/// Differential equivalence: the same program built as a static
+/// closure (all sources, one unit) and as a static link (archive +
+/// import stubs) must behave identically on the VM. Every artifact is
+/// built fresh in-test (unique names) so stale files can never mask
+/// a divergence the way they did during development.
+fn build_cli(args: &[&str]) -> crate::tests::common::Outcome {
+    let mut cmd = std::process::Command::new(crate::tests::common::rubyc_path());
+    cmd.args(args);
+    let out = cmd.output().expect("rubyc binary runs locally");
+    crate::tests::common::Outcome {
+        code: out.status.code().unwrap_or(-1),
+        stdout: out.stdout,
+        stderr: out.stderr,
+        timed_out: false,
+    }
+}
+
+#[test]
+fn vm_static_link_matches_closure_int_and_string() {
+    let dir = std::env::temp_dir().join("rubyc_vm_exe_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tag = format!("difflink-{}_{}", std::process::id(), n);
+    let lib_src = dir.join(format!("{tag}.lib.rc"));
+    let stub_src = dir.join(format!("{tag}.stub.rc"));
+    let closed_src = dir.join(format!("{tag}.closed.rc"));
+    let archive = dir.join(format!("{tag}.a"));
+    let exe_static = dir.join(format!("{tag}.static.exe"));
+    let exe_closed = dir.join(format!("{tag}.closed.exe"));
+    std::fs::write(
+        &lib_src,
+        "namespace LibNS { class Calc { public int answer() { return 42; } public string greet() { return \"hi\"; } } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &stub_src,
+        format!(
+            "namespace app {{ class Host {{ [LibraryImport(\"{tag}\", EntryPoint = \"answer\")] int answer(); [LibraryImport(\"{tag}\", EntryPoint = \"greet\")] string greet(); int main() {{ printf(\"{{0}}\", answer()); printf(\"{{0}}\", greet()); return 0; }} }} }}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &closed_src,
+        "namespace LibNS { class Calc { public int answer() { return 42; } public string greet() { return \"hi\"; } } }\nnamespace app { class Host { int main() { LibNS.Calc c = new LibNS.Calc(); printf(\"{0}\", c.answer()); printf(\"{0}\", c.greet()); return 0; } } }\n",
+    )
+    .unwrap();
+    let s = |p: &std::path::Path| p.to_str().unwrap().to_owned();
+    let lib_out = build_cli(&["compile", "-O", "static", &s(&lib_src), "-o", &s(&archive)]);
+    assert!(lib_out.code == 0, "lib build failed: {}", lib_out.stderr_str());
+    let link_out = build_cli(&[
+        "compile", "--lib", &s(&archive), &s(&stub_src), "-o", &s(&exe_static),
+    ]);
+    assert!(link_out.code == 0, "static link failed: {}", link_out.stderr_str());
+    let closed_out = build_cli(&["compile", &s(&closed_src), "-o", &s(&exe_closed)]);
+    assert!(closed_out.code == 0, "closure build failed: {}", closed_out.stderr_str());
+    let a = vm_exec(&exe_static, &[], None);
+    let b = vm_exec(&exe_closed, &[], None);
+    for f in [&lib_src, &stub_src, &closed_src, &archive, &exe_static, &exe_closed] {
+        let _ = std::fs::remove_file(f);
+    }
+    assert_eq!(a.code, 0, "static stderr: {}", a.stderr_str());
+    assert_eq!(b.code, 0, "closed stderr: {}", b.stderr_str());
+    assert_eq!(a.stdout_str(), "42hi");
+    assert_eq!(a.stdout_str(), b.stdout_str(), "linkage must not change behavior");
+}
+
+#[test]
+fn vm_static_link_transitive_matches_closure() {
+    // main -> Mid.run (archive A) -> Base.fetch (archive B): the
+    // fixpoint must merge both archives; the closure variant merges
+    // sources. Qualified entry points (immune to simple-name rules).
+    let dir = std::env::temp_dir().join("rubyc_vm_exe_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tag = format!("difftra-{}_{}", std::process::id(), n);
+    let (libb_src, liba_src, stub_src, closed_src) = (
+        dir.join(format!("{tag}.b.rc")),
+        dir.join(format!("{tag}.a.rc")),
+        dir.join(format!("{tag}.stub.rc")),
+        dir.join(format!("{tag}.closed.rc")),
+    );
+    let (arch_b, arch_a) = (
+        dir.join(format!("{tag}b.a")),
+        dir.join(format!("{tag}a.a")),
+    );
+    let (exe_static, exe_closed) = (
+        dir.join(format!("{tag}.static.exe")),
+        dir.join(format!("{tag}.closed.exe")),
+    );
+    std::fs::write(
+        &libb_src,
+        "namespace LibB { class Base { public int fetch() { return 7; } } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &liba_src,
+        format!(
+            "namespace LibA {{ class Mid {{ [LibraryImport(\"{tag}b\", EntryPoint = \"LibB.Base::fetch#0\")] int fetch(); public int run() {{ return fetch(); }} }} }}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &stub_src,
+        format!(
+            "namespace app {{ class Host {{ [LibraryImport(\"{tag}a\", EntryPoint = \"LibA.Mid::run#0\")] int run(); int main() {{ printf(\"{{0}}\", run()); return 0; }} }} }}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &closed_src,
+        "namespace LibB { class Base { public int fetch() { return 7; } } }\nnamespace LibA { class Mid { public int run() { LibB.Base b = new LibB.Base(); return b.fetch(); } } }\nnamespace app { class Host { int main() { LibA.Mid m = new LibA.Mid(); printf(\"{0}\", m.run()); return 0; } } }\n",
+    )
+    .unwrap();
+    let s = |p: &std::path::Path| p.to_str().unwrap().to_owned();
+    let b_out = build_cli(&["compile", "-O", "static", &s(&libb_src), "-o", &s(&arch_b)]);
+    assert!(b_out.code == 0, "libB build failed: {}", b_out.stderr_str());
+    let a_out = build_cli(&["compile", "-O", "static", &s(&liba_src), "-o", &s(&arch_a)]);
+    assert!(a_out.code == 0, "libA build failed: {}", a_out.stderr_str());
+    let link_out = build_cli(&[
+        "compile", "--lib", &s(&arch_a), "--lib", &s(&arch_b), &s(&stub_src), "-o",
+        &s(&exe_static),
+    ]);
+    assert!(link_out.code == 0, "transitive link failed: {}", link_out.stderr_str());
+    let closed_out = build_cli(&["compile", &s(&closed_src), "-o", &s(&exe_closed)]);
+    assert!(closed_out.code == 0, "closure build failed: {}", closed_out.stderr_str());
+    let a = vm_exec(&exe_static, &[], None);
+    let b = vm_exec(&exe_closed, &[], None);
+    for f in [&libb_src, &liba_src, &stub_src, &closed_src, &arch_b, &arch_a, &exe_static, &exe_closed] {
+        let _ = std::fs::remove_file(f);
+    }
+    assert_eq!(a.code, 0, "static stderr: {}", a.stderr_str());
+    assert_eq!(b.code, 0, "closed stderr: {}", b.stderr_str());
+    assert_eq!(a.stdout_str(), "7");
+    assert_eq!(a.stdout_str(), b.stdout_str(), "linkage must not change behavior");
+}
+
+#[test]
+fn vm_static_link_scale_matches_closure() {
+    // Linker at volume: 4 archives x 75 functions with cross-archive
+    // chains (D->C->B->A->main), string + int traffic. The closure
+    // variant merges all sources; both must agree on the VM.
+    const PER: usize = 75;
+    const ARCHIVES: usize = 4;
+    let dir = std::env::temp_dir().join("rubyc_vm_exe_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tag = format!("diffscale-{}_{}", std::process::id(), n);
+    let s = |p: &std::path::Path| p.to_str().unwrap().to_owned();
+    // Archive variant: chain() goes through an import stub.
+    // Closure variant: chain() calls the next class directly.
+    // Both print chain(), f0_0, f1_37, f2_74, f3_11 = "0" "0" "37" "74" "11".
+    let mut arch_paths = Vec::new();
+    let mut closed_src = String::new();
+    for k in 0..ARCHIVES {
+        let mut fns = String::new();
+        for i in 0..PER {
+            fns.push_str(&format!("public int f{k}_{i}() {{ return {i}; }}\n"));
+        }
+        let stub = format!(
+            "[LibraryImport(\"scale-{tag}-{0}\", EntryPoint = \"Scale{0}.C{0}::f{0}_0#0\")] int next();\n",
+            k + 1,
+        );
+        let direct = if k + 1 < ARCHIVES {
+            format!(
+                "public int chain() {{ Scale{0}.C{0} c = new Scale{0}.C{0}(); return c.f{0}_0(); }}\n",
+                k + 1,
+            )
+        } else {
+            String::new()
+        };
+        let chain_stub = if k + 1 < ARCHIVES {
+            format!("public int chain() {{ return next(); }}\n")
+        } else {
+            String::new()
+        };
+        let src_path = dir.join(format!("{tag}.s{k}.rc"));
+        std::fs::write(
+            &src_path,
+            format!("namespace Scale{k} {{ class C{k} {{\n{fns}{stub}{chain_stub}}} }}\n"),
+        )
+        .unwrap();
+        closed_src.push_str(&format!("namespace Scale{k} {{ class C{k} {{\n{fns}{direct}}} }}\n"));
+        let arch = dir.join(format!("scale-{tag}-{k}.a"));
+        let out = build_cli(&["compile", "-O", "static", &s(&src_path), "-o", &s(&arch)]);
+        assert!(out.code == 0, "archive {k} build failed: {}", out.stderr_str());
+        arch_paths.push((src_path, arch));
+    }
+    // Static main: chain() on archive 0 + direct stubs for spread functions.
+    // Prints chain(), f0_0, f1_37, f2_74, f3_11 = "0" "0" "37" "74" "11".
+    let mut stub_calls = String::new();
+    for (k, i) in [(0usize, 0usize), (1, 37), (2, 74), (3, 11)] {
+        stub_calls.push_str(&format!("printf(\"{{0}}\", f{k}_{i}());"));
+    }
+    // chain() head returns f1_0 = 0; add nothing for it.
+    let stub_src = dir.join(format!("{tag}.stub.rc"));
+    std::fs::write(
+        &stub_src,
+        format!(
+            "namespace app {{ class Host {{\n[LibraryImport(\"scale-{tag}-0\", EntryPoint = \"Scale0.C0::chain#0\")] int chain0();\n[LibraryImport(\"scale-{tag}-0\", EntryPoint = \"Scale0.C0::f0_0#0\")] int f0_0();\n[LibraryImport(\"scale-{tag}-1\", EntryPoint = \"Scale1.C1::f1_37#0\")] int f1_37();\n[LibraryImport(\"scale-{tag}-2\", EntryPoint = \"Scale2.C2::f2_74#0\")] int f2_74();\n[LibraryImport(\"scale-{tag}-3\", EntryPoint = \"Scale3.C3::f3_11#0\")] int f3_11();\nint main() {{ printf(\"{{0}}\", chain0()); {stub_calls} return 0; }} }} }}\n"
+        ),
+    )
+    .unwrap();
+    let closed_src_path = dir.join(format!("{tag}.closed.rc"));
+    let closed_main = "namespace app { class Host { int main() { Scale0.C0 z0 = new Scale0.C0(); printf(\"{0}\", z0.chain()); printf(\"{0}\", z0.f0_0()); Scale1.C1 z1 = new Scale1.C1(); printf(\"{0}\", z1.f1_37()); Scale2.C2 z2 = new Scale2.C2(); printf(\"{0}\", z2.f2_74()); Scale3.C3 z3 = new Scale3.C3(); printf(\"{0}\", z3.f3_11()); return 0; } } }\n";
+    std::fs::write(&closed_src_path, format!("{closed_src}{closed_main}")).unwrap();
+    let exe_static = dir.join(format!("{tag}.static.exe"));
+    let exe_closed = dir.join(format!("{tag}.closed.exe"));
+    let mut lib_args: Vec<String> = Vec::new();
+    for (_, arch) in &arch_paths {
+        lib_args.push("--lib".to_owned());
+        lib_args.push(s(&arch));
+    }
+    let mut link_cmd: Vec<&str> = vec!["compile"];
+    link_cmd.extend(lib_args.iter().map(|a| a.as_str()));
+    link_cmd.extend([s(&stub_src).leak() as &str, "-o", s(&exe_static).leak() as &str]);
+    let link_out = build_cli(&link_cmd);
+    assert!(link_out.code == 0, "scale link failed: {}", link_out.stderr_str());
+    let closed_out = build_cli(&["compile", &s(&closed_src_path), "-o", &s(&exe_closed)]);
+    assert!(closed_out.code == 0, "closure build failed: {}", closed_out.stderr_str());
+    let a = vm_exec(&exe_static, &[], None);
+    let b = vm_exec(&exe_closed, &[], None);
+    let mut doomed: Vec<std::path::PathBuf> = arch_paths.into_iter().flat_map(|(s, a)| [s, a]).collect();
+    doomed.extend([stub_src, closed_src_path, exe_static, exe_closed]);
+    for f in &doomed {
+        let _ = std::fs::remove_file(f);
+    }
+    for k in 0..ARCHIVES {
+        let _ = std::fs::remove_file(dir.join(format!("{tag}.s{k}.rc")));
+    }
+    assert_eq!(a.code, 0, "static stderr: {}", a.stderr_str());
+    assert_eq!(b.code, 0, "closed stderr: {}", b.stderr_str());
+    assert_eq!(a.stdout_str(), "00377411");
+    assert_eq!(a.stdout_str(), b.stdout_str(), "linkage must not change behavior");
 }

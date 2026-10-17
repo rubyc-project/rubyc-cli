@@ -50,12 +50,13 @@ impl Drop for LaneGuard {
 /// True when exit 255 came from ssh itself (transport), not the guest:
 /// guest stderr never contains ssh's own diagnostics.
 fn is_transport_failure(out: &Outcome) -> bool {
-    out.code == 255
-        && (out.stderr_str().contains("ssh:")
-            || out.stderr_str().contains("Connection refused")
-            || out.stderr_str().contains("Connection timed out")
-            || out.stderr_str().contains("No route to host")
-            || out.stderr_str().contains("Permission denied"))
+    // Retry when the guest status marker is ABSENT: the remote shell
+    // never reached the echo, so ssh's own exit code (255 for a refused
+    // or reset transport, a timed-out stage, a closed channel — often
+    // with no stderr text) is all we have, and it is not a guest
+    // result. A guest that ran at all always carries the marker, so
+    // its own failures (including a legitimate 255) are never retried.
+    out.code == 255 && !out.stdout_str().contains(GUEST_RC_PREFIX)
 }
 
 fn ssh_base() -> Command {
@@ -84,11 +85,30 @@ fn stage(local: &Path) -> Result<String, String> {
         &local.to_string_lossy(),
         &format!("rubyc-dev:{remote}"),
     ]);
-    let out = super::spawn_and_collect_timeout(&mut scp, None, HOST_DEADLINE);
+    let mut out = super::spawn_and_collect_timeout(&mut scp, None, upload_deadline(local));
     if out.code != 0 {
+        // Name the upload budget explicitly: a scp timeout is a
+        // transport hiccup the retry wrapper must classify (bare
+        // exit 255 looks like a real guest failure otherwise).
+        if out.timed_out {
+            out.stderr.extend_from_slice(b"[vm_exec: scp host-side timeout]");
+        }
         return Err(format!("scp failed: {}", out.stderr_str()));
     }
     Ok(dir)
+}
+
+/// Upload budget for `scp`: the flat [`HOST_DEADLINE`] is sized for
+/// command round-trips, not for pushing a multi-megabyte static
+/// image (the pulled-world exes are ~45 MB; a slow link exceeded
+/// 90 s and the stage timed out as bare exit 255 — an unmarked
+/// transport failure the retry wrapper could not classify, so the
+/// run reported a bogus test failure instead of retrying).
+/// Budget scales with the payload (10 s + ~1 s per MB) and keeps
+/// the old floor for small artifacts.
+fn upload_deadline(local: &Path) -> Duration {
+    let mb = std::fs::metadata(local).map(|m| m.len() / (1024 * 1024)).unwrap_or(0);
+    HOST_DEADLINE.saturating_add(Duration::from_secs(mb))
 }
 
 fn cleanup(dir: &str) {
@@ -119,6 +139,18 @@ pub fn vm_exec(local_exe: &Path, args: &[&str], stdin: Option<&[u8]>) -> Outcome
     }
 }
 
+/// Shell-quote one argv element for the remote command line:
+/// single-quote wrap with `'\''` escapes. Without this, args
+/// containing spaces split on the VM (`"a b"` arrived as two args
+/// and broke argv echo) — and quoting is a no-op for plain args.
+fn sh_quote(arg: &str) -> String {
+    let mut out = String::with_capacity(arg.len() + 2);
+    out.push('\'');
+    out.push_str(&arg.replace('\'', "'\\''"));
+    out.push('\'');
+    out
+}
+
 /// Single attempt; see [`vm_exec`] for the retry wrapper.
 fn vm_exec_once(local_exe: &Path, args: &[&str], stdin: Option<&[u8]>) -> Outcome {
     let dir = match stage(local_exe) {
@@ -132,20 +164,56 @@ fn vm_exec_once(local_exe: &Path, args: &[&str], stdin: Option<&[u8]>) -> Outcom
             };
         }
     };
+    let quoted: Vec<String> = args.iter().map(|a| sh_quote(a)).collect();
+    // No `exec` in the remote command: exec replaces the shell, so a
+    // guest killed by a signal just closes the channel and ssh
+    // reports its OWN failure code (255) — indistinguishable from a
+    // transport error, which let a real SIGSEGV masquerade as a
+    // transport hiccup (and got "retried" into silence). The guest
+    // status is echoed as a marker instead: real guest failures stay
+    // verbatim (139 = SIGSEGV, 124 = timeout), and a genuine
+    // transport failure still arrives with no marker at all.
     let remote_cmd = format!(
-        "chmod +x {dir}/t && exec timeout -s KILL 50 {dir}/t {}",
-        args.join(" ")
+        "chmod +x {dir}/t; timeout -s KILL 50 {dir}/t {}; echo \"{}$?\"",
+        quoted.join(" "),
+        GUEST_RC_PREFIX
     );
     let mut ssh = ssh_base();
     ssh.arg(remote_cmd);
     let mut out = spawn_and_collect_timeout(&mut ssh, stdin, HOST_DEADLINE);
-    // `exec` inside makes timeout's code (124) the ssh exit code.
-    if out.code == 255 && out.timed_out {
-        out.stderr
-            .extend_from_slice(b"[vm_exec: host-side timeout]");
+    match extract_guest_rc(&mut out) {
+        Some(code) => out.code = code,
+        None if out.code == 255 && out.timed_out => {
+            out.stderr
+                .extend_from_slice(b"[vm_exec: host-side timeout]");
+        }
+        None => {}
     }
     cleanup(&dir);
     out
+}
+
+/// Marker framing the echoed guest exit status (see `vm_exec_once`).
+const GUEST_RC_PREFIX: &str = "__GUEST_RC__:";
+
+/// Pull the echoed guest status out of stdout, strip the marker, and
+/// hand back the guest's own exit code.
+fn extract_guest_rc(out: &mut Outcome) -> Option<i32> {
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let at = text.rfind(GUEST_RC_PREFIX)?;
+    // The status is the marker line's trailing digits (shell `echo`
+    // adds a newline; the guest's own output precedes the marker).
+    let tail = &text[at + GUEST_RC_PREFIX.len()..];
+    let digits: String = tail
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '-')
+        .collect();
+    let code: i32 = digits.parse().ok()?;
+    // Keep guest stdout pristine: everything before the marker is the
+    // program's own output.
+    let keep = text[..at].as_bytes().to_vec();
+    out.stdout = keep;
+    Some(code)
 }
 
 /// Copy a data file next to the staged exe (for stdin/file tests that

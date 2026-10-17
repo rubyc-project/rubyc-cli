@@ -90,22 +90,58 @@ cat > "$HOOKS_HELPER" <<'HOOKS'
 # with CWD = the project directory (src/libraries/<Lib>/).
 set -euo pipefail
 
+# Atomic file staging: never let a concurrent reader observe a
+# half-written file. `cp` truncates-then-writes in place, so a second
+# build reading the same staged file mid-copy sees EOF midsource
+# (observed as "expected ... found end of file"). Writing to a
+# PID-unique temp then renaming is atomic on POSIX: readers see the
+# old-complete or the new-complete bytes, never a mix. Content is
+# deterministic (same upstream sources), so version skew is harmless.
+acp() {
+  tmp="$2.tmp.$$"
+  cp -- "$1" "$tmp" && mv -- "$tmp" "$2"
+}
+
 cmd="${1:?usage: rc-hooks.sh prebuild|postbuild <arg>...}"
 shift
 
 case "$cmd" in
   prebuild)
+    # Mutual exclusion across concurrent builds sharing this dep dir:
+    # staging/pruning/deleting are not atomic, and a second prebuild
+    # mid-flight corrupts files the first already globbed (observed as
+    # `cp: ... File exists` and missing-file reads). One holder at a
+    # time per directory; the lockfile lives in /tmp, never the tree.
+    # The fd closes (releasing) on every exit path, including errors.
+    lock="/tmp/rubyc-prebuild-$(printf '%s' "$PWD" | cksum | cut -d' ' -f1).lock"
+    exec 9>"$lock"
+    flock 9
     srcdir="${1:-src}"
     # Drop the previous build's output dir first: post-build installs
     # from `out/` on success, but on failure a stale artifact would
     # otherwise be re-installed by a later post-build, masking the
     # failure with a fresh timestamp on stale bytes.
     rm -rf out
+    # Sweep orphan transients: a previous build's `.rc` whose `.cs`
+    # source is gone (upstream removed it, or a stale pull). Post-build
+    # deliberately does NOT delete transients (see postbuild): removing
+    # files another in-flight build already globbed breaks its reads,
+    # so the sweep lives here, before this build's own glob — and only
+    # removes files no build could want. Hook-managed dirs (CoreCLR/
+    # masters, Common/ fetches, ref/ fallback) and generated names have
+    # no in-place `.cs` by design and are exempt.
+    find "$srcdir" -name '*.rc' ! -path '*/CoreCLR/*' ! -path '*/Common/*' ! -path '*/ref/*' \
+      ! -name 'SR.rc' ! -name 'ThisAssembly.rc' -print0 \
+      | while IFS= read -r -d '' f; do
+        [ -f "${f%.rc}.cs" ] || rm -f -- "$f"
+      done
     # Copy upstream .cs -> .rc (transient build sources). The .cs files are
     # never modified, so the vendored tree stays git-clean against
     # dotnet/runtime even mid-build.
-    find "$srcdir" -name '*.cs' ! -path '*/obj/*' ! -path '*/bin/*' -print0 \
-      | while IFS= read -r -d '' f; do cp -- "$f" "${f%.cs}.rc"; done
+    # `*.netfx.cs` is .NET Framework-only by naming convention (hard
+    # `#error` guard inside) and can never join a CoreCLR build.
+    find "$srcdir" -name '*.cs' ! -name '*.netfx.cs' ! -path '*/obj/*' ! -path '*/bin/*' -print0 \
+      | while IFS= read -r -d '' f; do acp "$f" "${f%.cs}.rc"; done
     # CoreCLR-VM partials (`src/coreclr/System.Private.CoreLib/src/`,
     # e.g. `String.CoreCLR.cs`): only System.Private.CoreLib compiles
     # them (they extend its `partial` types). Fetched as transient
@@ -114,12 +150,12 @@ case "$cmd" in
     if [ "$(basename "$PWD")" = "System.Private.CoreLib" ]; then
       coredir="../../../src/coreclr/System.Private.CoreLib/src"
       if [ -d "$coredir" ]; then
-        (cd "$coredir" && find . -name '*.cs' ! -path '*/obj/*' ! -path '*/bin/*' -print0) \
+        (cd "$coredir" && find . -name '*.cs' ! -name '*.netfx.cs' ! -path '*/obj/*' ! -path '*/bin/*' -print0) \
           | while IFS= read -r -d '' f; do
           dest="$srcdir/CoreCLR/${f#./}"
           dest="${dest%.cs}.rc"
           mkdir -p "$(dirname "$dest")"
-          cp -- "$coredir/$f" "$dest"
+          acp "$coredir/$f" "$dest"
         done
       else
         # Sparse checkout (no src/coreclr in tree): restage the masters
@@ -197,6 +233,18 @@ case "$cmd" in
         esac
         python3 - "$proj" "$projdir" "$srcdir" <<'PYEOF' || true
 import os, sys, re, xml.etree.ElementTree as ET
+# Atomic staging writes (see acp() above): temp file + os.replace so a
+# concurrent build reading the same staged file never sees a
+# half-written copy. Same-process staging is sequential, so the
+# PID-suffixed temp name is collision-free.
+def abytes(dest, data):
+    tmp = "%s.tmp.%d" % (dest, os.getpid())
+    with open(tmp, 'wb') as f:
+        f.write(data)
+    os.replace(tmp, dest)
+def acopy(src, dest):
+    with open(src, 'rb') as f:
+        abytes(dest, f.read())
 # Platform truth for a standard linux-x64 CoreCLR build (non-AOT,
 # full globalization, release). Everything else is empty.
 # Target-selected values arrive via RUBYC_TPI/RUBYC_TARGETS_* (set
@@ -447,8 +495,7 @@ def fetch_to(link, tail, src, sub):
     # as real staged sources for the ref-fallback emptiness scan.)
     decisions[os.path.normpath(dest)] = True
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    with open(src, 'rb') as fsrc, open(dest, 'wb') as fdst:
-        fdst.write(fsrc.read())
+    acopy(src, dest)
 def link_of(child):
     # `<Link>` arrives as an attribute (`Link="..."`) or a child
     # element (`<Link>...</Link>`); both forms occur across the
@@ -554,8 +601,7 @@ def walk(node, inherited_cond, curdir, is_import, depth):
                     'src', link if link else tail))
                 dest = os.path.splitext(dest)[0] + '.rc'
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
-                with open(src, 'rb') as fsrc, open(dest, 'wb') as fdst:
-                    fdst.write(fsrc.read())
+                acopy(src, dest)
                 decisions[dest] = True
             elif '$(CoreLibSharedDir)' in inc:
                 # CoreLib shared source (e.g. Resources.Extensions
@@ -578,8 +624,7 @@ def walk(node, inherited_cond, curdir, is_import, depth):
                     'src', link if link else tail))
                 dest = os.path.splitext(dest)[0] + '.rc'
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
-                with open(src, 'rb') as fsrc, open(dest, 'wb') as fdst:
-                    fdst.write(fsrc.read())
+                acopy(src, dest)
                 decisions[dest] = True
             elif is_import and '$(MSBuildThisFileDirectory)' in inc:
                 # Shared item from an imported file (e.g. the AsnWriter
@@ -597,8 +642,7 @@ def walk(node, inherited_cond, curdir, is_import, depth):
                     'src', link if link else tail))
                 dest = os.path.splitext(dest)[0] + '.rc'
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
-                with open(src, 'rb') as fsrc, open(dest, 'wb') as fdst:
-                    fdst.write(fsrc.read())
+                acopy(src, dest)
                 if not link:
                     # No Link: keep the fetched copy explicitly, or
                     # explicit-list pruning drops it as unlisted.
@@ -670,8 +714,7 @@ def walk(node, inherited_cond, curdir, is_import, depth):
                     dest = os.path.normpath(os.path.join('src', tail))
                     dest = os.path.splitext(dest)[0] + '.rc'
                     os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    with open(cs, 'rb') as fsrc, open(dest, 'wb') as fdst:
-                        fdst.write(fsrc.read())
+                    acopy(cs, dest)
                     continue
                 rc = os.path.splitext(cs)[0] + '.rc'
                 decisions[rc] = (decisions.get(rc, False)
@@ -679,6 +722,80 @@ def walk(node, inherited_cond, curdir, is_import, depth):
         else:
             walk(child, combine_conds(child.get('Condition'), inherited_cond), curdir, is_import, depth)
 walk(root, None, projdir, False, 0)
+# CoreLib's real implementation project lives outside the libraries
+# tree (`src/coreclr/System.Private.CoreLib/System.Private.CoreLib.csproj`):
+# the shared fragment above never lists its `$(CommonPath)` partials
+# (e.g. `Common/src/Internal/VersionResilientHashCode.cs`, whose
+# absence surfaces as phantom unknown-function errors downstream).
+# Fetch those Common links here. ONLY `$(CommonPath)` includes are
+# harvested: `$(BclSourcesRoot)` originals are already staged via the
+# masters above (fetching them again would duplicate types), and
+# nothing else is touched — no verdicts, no deletions, just keeps via
+# fetch_to. Conditions evaluate with the same machinery as the main
+# walk. CWD is the library dir throughout.
+if os.path.basename(os.path.abspath('.')) == 'System.Private.CoreLib':
+    coreclr_proj = os.path.normpath(
+        '../../../src/coreclr/System.Private.CoreLib/System.Private.CoreLib.csproj')
+    try:
+        coreclr_root = ET.parse(coreclr_proj).getroot()
+    except Exception:
+        coreclr_root = None
+    if coreclr_root is not None:
+        for ig in coreclr_root.iter():
+            if local(ig.tag) != 'ItemGroup':
+                continue
+            group_cond = combine_conds(ig.get('Condition'), None)
+            for child in ig:
+                if local(child.tag) != 'Compile':
+                    continue
+                inc = child.get('Include') or ''
+                if '$(CommonPath)' not in inc:
+                    continue
+                cond = combine_conds(child.get('Condition'), group_cond)
+                if cond and not eval_cond(cond):
+                    continue
+                tail = inc.replace('\\', '/').split('$(CommonPath)', 1)[1].lstrip('/')
+                src = os.path.normpath(os.path.join('../Common/src', tail))
+                if not os.path.isfile(src):
+                    continue
+                fetch_to(child.get('Link'), tail, src, 'Common')
+# Bulk-staged CoreCLR originals (`src/CoreCLR/`, copied unconditionally
+# above) honor their csproj gates here: entries evaluating false for
+# this build (e.g. Windows/Apple-only COM files under
+# `FeatureCominterop`/`FeatureObjCMarshal`/`TargetsWindows`) are
+# removed before the glob collects sources. Unlisted files stay (the
+# bulk copy is the fallback for entries no parser understands), and
+# unparseable conditions keep the file — deletions only ever come
+# from a positively-false verdict, never from confusion.
+if os.path.basename(os.path.abspath('.')) == 'System.Private.CoreLib':
+    coreclr_proj = os.path.normpath(
+        '../../../src/coreclr/System.Private.CoreLib/System.Private.CoreLib.csproj')
+    try:
+        bcl_root = ET.parse(coreclr_proj).getroot()
+    except Exception:
+        bcl_root = None
+    if bcl_root is not None:
+        pruned = []
+        for ig in bcl_root.iter():
+            if local(ig.tag) != 'ItemGroup':
+                continue
+            group_cond = combine_conds(ig.get('Condition'), None)
+            for child in ig:
+                if local(child.tag) != 'Compile':
+                    continue
+                inc = child.get('Include') or ''
+                if '$(BclSourcesRoot)' not in inc:
+                    continue
+                cond = combine_conds(child.get('Condition'), group_cond)
+                if cond and not eval_cond(cond):
+                    tail = inc.replace('\\', '/').split('$(BclSourcesRoot)', 1)[1].lstrip('/')
+                    dest = os.path.normpath(
+                        os.path.join('src', 'CoreCLR', os.path.splitext(tail)[0] + '.rc'))
+                    if os.path.isfile(dest):
+                        os.remove(dest)
+                        pruned.append(dest)
+        if pruned:
+            print('[rubyc] CoreCLR condition-pruned: %s' % ', '.join(sorted(pruned)))
 # Generated sources: MSBuild templates (`*.cs.in`, e.g.
 # DiagnosticSource's `ThisAssembly.cs.in`) never exist as `.cs`, so
 # copy-all misses them and their types come out unknown downstream
@@ -705,8 +822,7 @@ for dp, _, fns in os.walk(projdir):
         base = tpl[:-len('.in')]
         gen_rc = os.path.splitext(base)[0] + '.rc'
         os.makedirs(os.path.dirname(gen_rc), exist_ok=True)
-        with open(gen_rc, 'w') as f:
-            f.write(text)
+        abytes(gen_rc, text.encode('utf-8'))
         decisions[gen_rc] = True
         generated.add(gen_rc)
 # Generated sources, part 1b: `ThisAssembly` from
@@ -738,8 +854,7 @@ for dp, _, fns in os.walk(projdir):
         body = re.sub(r'\$\([A-Za-z0-9_.]+\)', '', body)
         dest = os.path.normpath(os.path.join(dp, 'ThisAssembly.rc'))
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(dest, 'w') as f:
-            f.write(body)
+        abytes(dest, body.encode('utf-8'))
         decisions[os.path.normpath(dest)] = True
         generated.add(os.path.normpath(dest))
 # Generated sources, part 2: `SR` from `*.resx`. dotnet generates
@@ -813,9 +928,8 @@ for _idx, (_dest, _props) in enumerate(sr_collected):
         _lines.append('            }')
         _lines.append('        }')
     os.makedirs(os.path.dirname(_dest), exist_ok=True)
-    with open(_dest, 'w') as f:
-        f.write('namespace System\n{\n    internal static partial class SR\n    {\n'
-                + '\n'.join(_lines) + '\n    }\n}\n')
+    abytes(_dest, ('namespace System\n{\n    internal static partial class SR\n    {\n'
+                + '\n'.join(_lines) + '\n    }\n}\n').encode('utf-8'))
     decisions[_dest] = True
     generated.add(_dest)
 # Apply local-source verdicts now that every entry has voted.
@@ -844,8 +958,7 @@ if not staged:
     for refcs in sorted(_refglob.glob(os.path.join('ref', '*.cs'))):
         dest = os.path.join(srcroot, 'ref', os.path.basename(refcs)[:-len('.cs')] + '.rc')
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(refcs, 'rb') as fsrc, open(dest, 'wb') as fdst:
-            fdst.write(fsrc.read())
+        acopy(refcs, dest)
         decisions[os.path.normpath(dest)] = True
 if explicit and os.path.basename(os.path.abspath('.')) != 'System.Private.CoreLib':
     # No SDK globs: drop staged sources with no explicit entry at all
@@ -885,6 +998,13 @@ PYEOF
     ;;
   postbuild)
     lib="${1:?lib name required}"; srcdir="${2:-src}"
+    # Same per-directory lock as prebuild: installs (and `out/`
+    # cleanup above) serialize against concurrent staging of this dir.
+    # Installs are atomic renames (acp), so fragment readers never see
+    # half-written images even outside the lock.
+    lock="/tmp/rubyc-prebuild-$(printf '%s' "$PWD" | cksum | cut -d' ' -f1).lock"
+    exec 9>"$lock"
+    flock 9
     # Install the built shared library to the per-OS rubyc libraries dir.
     os="$(uname -s)"
     case "$os" in
@@ -900,7 +1020,7 @@ PYEOF
     # as the output convention settles.
     for cand in "out/$lib.so" "$lib.so" "out/$lib" "$lib"; do
       if [ -f "$cand" ]; then
-        cp -- "$cand" "$dyn/$lib.so"
+        acp "$cand" "$dyn/$lib.so"
         echo "[install] $lib -> $dyn/$lib.so"
         # Drop the local artifact after installing: per-lib `out/`
         # dirs otherwise accumulate every built .so (8G+ and a full
@@ -910,7 +1030,7 @@ PYEOF
         # emitted one (dynamic-linking consume path reads it from the
         # install dir); then drop the local copy too.
         if [ -f "out/$lib.rci" ]; then
-          cp -- "out/$lib.rci" "$dyn/$lib.rci"
+          acp "out/$lib.rci" "$dyn/$lib.rci"
           echo "[install] $lib.rci -> $dyn/$lib.rci"
           rm -f -- "out/$lib.rci"
         fi
@@ -922,22 +1042,24 @@ PYEOF
     # per linked image, it is never shared at runtime).
     for cand in "out/$lib.a" "$lib.a"; do
       if [ -f "$cand" ]; then
-        cp -- "$cand" "$sta/$lib.a"
+        acp "$cand" "$sta/$lib.a"
         echo "[install] $lib -> $sta/$lib.a"
         rm -f -- "$cand"
         if [ -f "out/$lib.rci" ]; then
-          cp -- "out/$lib.rci" "$sta/$lib.rci"
+          acp "out/$lib.rci" "$sta/$lib.rci"
           echo "[install] $lib.rci -> $sta/$lib.rci"
           rm -f -- "out/$lib.rci"
         fi
         break
       fi
     done
-    # Delete the transient build files (restore the .cs-only tree so the
-    # pull script can regenerate cleanly on update): the copied .rc
-    # sources. The library's .rcp and the shared .rcs stay: rebuilds
-    # need them in place.
-    find "$srcdir" -name '*.rc' -print0 | xargs -0 -r rm -f
+    # Transient `.rc` sources are intentionally NOT deleted here. Every
+    # prebuild re-stages deterministically (copy-all + verdict prune +
+    # orphan sweep), so leftovers never affect the next build — but
+    # deleting them here removes files a concurrent in-flight build may
+    # have already globbed and be about to read, breaking its build
+    # with skipped sources (`unknown name` downstream). The library's
+    # .rcp and the shared .rcs stay: rebuilds need them in place.
     ;;
   *)
     echo "unknown hook command: $cmd" >&2
