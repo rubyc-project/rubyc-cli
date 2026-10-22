@@ -94,12 +94,10 @@ fn build_exe(
     let exe = dir.join(exe_name);
     let mut cmd = Command::new(rubyc_bin());
     cmd.arg("build").arg(dir.join("app.rcp")).arg("-o").arg(&exe);
-    // Smoke-test link posture (see AGENTS.md "Current exe env"):
-    // uncalled PAL/runtime imports zero-stub instead of failing the
-    // link. The tests assert RUNTIME behavior (stdout/exit); link
-    // strictness for never-called natives is out of scope here.
-    // (`cargo build` of the `rubyc` binary itself is unaffected.)
-    cmd.env("RUBYC_ALLOW_MISSING_IMPORTS", "1");
+    // Linking is strict: an unresolved import is a hard error, so a
+    // build here proves every native it references was provided. The
+    // smoke tests deliberately link against examples/exe_smoke/host_stubs.c
+    // to supply the ones they exercise.
     for a in extra_args {
         cmd.arg(a);
     }

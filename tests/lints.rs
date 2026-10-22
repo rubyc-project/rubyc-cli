@@ -13,12 +13,14 @@ fn run_with_lint_flags(source: &str, flags: &[&str]) -> (i32, String) {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
+    // The child may exit before reading stdin (an invalid CLI flag is
+    // exactly what one test asserts), which closes the pipe. That is not
+    // a test failure: the exit code is the result under test.
+    let _ = child
         .stdin
         .as_mut()
         .unwrap()
-        .write_all(source.as_bytes())
-        .unwrap();
+        .write_all(source.as_bytes());
     let out = child.wait_with_output().unwrap();
     (
         out.status.code().unwrap_or(-1),
@@ -93,6 +95,24 @@ fn used_members_and_locals_are_never_flagged() {
 }
 
 #[test]
+fn a_delegate_local_invoked_by_name_is_used() {
+    // `f(2)` reads `f`. The read collector pushed only the ARGUMENTS of a
+    // call, so a delegate held in a local was reported as "declared but
+    // never used" while every call through it worked.
+    let source = r#"namespace t; class c {
+        int main() {
+            System.Func<int, int> f = x => x + 1;
+            System.Func<int, int> g = static (a) => a * 2;
+            printf("{0}", f(2) + g(3));
+            return 0;
+        }
+    }"#;
+    let (code, output) = run_with_lint_flags(source, &[]);
+    assert_eq!(code, 0);
+    assert!(!output.contains("W0001"), "{output}");
+}
+
+#[test]
 fn public_members_are_exempt_from_w0002() {
     let source = r#"namespace t; class c {
         public int exposed = 1;
@@ -100,5 +120,24 @@ fn public_members_are_exempt_from_w0002() {
         int main() { printf("ok"); }
     }"#;
     let (_, output) = run_with_lint_flags(source, &[]);
+    assert!(!output.contains("W0002"), "{output}");
+}
+
+#[test]
+fn a_private_generic_method_called_with_arguments_is_used() {
+    // The callee was recorded with its generic suffix (`One<string>`),
+    // so `One` looked unreferenced and the conformance corpus printed a
+    // false "never used" warning.
+    let source = r#"namespace t; class c {
+        private static int One<T>(T v) where T : class { return 1; }
+        private int Two<T>(T v) where T : class { return 2; }
+        int main() {
+            int n = One<string>("x") + this.Two<string>("y");
+            printf("{0}", n);
+            return 0;
+        }
+    }"#;
+    let (code, output) = run_with_lint_flags(source, &[]);
+    assert_eq!(code, 0);
     assert!(!output.contains("W0002"), "{output}");
 }

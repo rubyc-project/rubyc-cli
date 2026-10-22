@@ -24,10 +24,28 @@ fn assembly_block_flows_through_jit_raw_instruction() {
 }
 
 #[test]
-fn compatibility_misspelling_is_accepted() {
+fn misspelled_directive_is_rejected() {
+    // `#Assmbly` / `#EndAssmbly` were accepted as a "compatibility"
+    // courtesy. No file in the .NET tree uses them and C# has no such
+    // directive, so a typo silently entered inline-assembly mode —
+    // everything after it was captured as assembly instead of being
+    // compiled. Reported instead.
     let (code, stderr) =
         run("#Assmbly\nnop\n#EndAssmbly\nnamespace t { class c { int main() { return 3; } } }");
-    assert_eq!(code, 3, "{stderr}");
+    assert_ne!(code, 3, "the misspelling must not assemble and run: {stderr}");
+    assert!(stderr.contains("Assmbly"), "names the bad directive: {stderr}");
+}
+
+#[test]
+fn assembly_block_closes_cleanly() {
+    // `#EndAssembly` used to share its arm with two misspellings and
+    // then only ever report "without matching #Assembly" — so a
+    // well-formed block reported an error and left the capture open,
+    // blanking the rest of the file.
+    let (code, stderr) =
+        run("#Assembly\nnop\n#EndAssembly\nnamespace t { class c { int main() { return 5; } } }");
+    assert_eq!(code, 5, "{stderr}");
+    assert!(!stderr.contains("without matching"), "{stderr}");
 }
 
 #[test]

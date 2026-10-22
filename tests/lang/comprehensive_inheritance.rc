@@ -1,0 +1,10 @@
+namespace TestInh {
+    public class A { public virtual void M() {} }
+    public class B : A { public override void M() {} }
+    public interface IA { }
+    public interface IB { }
+    public class C : IA, IB { }
+    public class InhTest {
+        public static void Main() {}
+    }
+}

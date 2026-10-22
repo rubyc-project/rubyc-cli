@@ -5,7 +5,7 @@
 //! ssh, and asserts on the captured result — per the project rule that
 //! compiled executables never run on the host.
 
-use crate::tests::common::vm::vm_exec;
+use crate::tests::common::vm::{vm_exec, vm_exec_bundle};
 use rubyc::native;
 use rubyc::parser;
 use rubyc_target_linux_x86_64::{BACKEND, IMAGE_WRITER};
@@ -261,6 +261,307 @@ fn vm_argv_length_counts_user_args_only() {
     let out = build_and_run_vm(
         r#"namespace t { class c { int main(string[] args) { return args.Length; } } }"#,
         &["a", "bb", "ccc"],
+        None,
+    );
+    assert_eq!(out.code, 3, "stderr: {}", out.stderr_str());
+}
+
+#[test]
+fn vm_typeof_descriptors_have_identity_and_metadata() {
+    // One canonical descriptor per type; names are .NET spellings,
+    // and the common Type predicates read descriptor flags.
+    let out = build_and_run_vm(
+        r#"namespace t; class C {
+            static int Main() {
+                System.Type a = typeof(int);
+                System.Type b = typeof(int);
+                System.Type s = typeof(string);
+                if (a != b) return 1;
+                if (a == s) return 2;
+                if (a.Name != "Int32") return 3;
+                if (s.Name != "String") return 4;
+                if (!a.IsValueType) return 5;
+                if (!a.IsPrimitive) return 6;
+                if (s.IsPrimitive) return 7;
+                if (!s.IsClass) return 8;
+                System.Type arr = typeof(int[]);
+                if (arr != typeof(int[])) return 9;
+                if (!arr.IsArray || !arr.IsSZArray) return 10;
+                if (arr.Name != "Int32[]") return 11;
+                if (arr.FullName != "System.Int32[]") return 12;
+                if (!(a is System.Type)) return 13;
+                return 0;
+            }
+        }"#,
+        &[],
+        None,
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr_str());
+}
+
+#[test]
+fn vm_is_not_null_pattern_lowers() {
+    let out = build_and_run_vm(
+        r#"namespace t;
+        class C {
+            static int Main() {
+                object o = "x";
+                object n = null;
+                if (!(o is not null)) return 1;
+                if (n is not null) return 2;
+                return 0;
+            }
+        }"#,
+        &[],
+        None,
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr_str());
+}
+
+#[test]
+fn vm_unsafe_accessor_calls_its_target() {
+    // An `[UnsafeAccessor]` extern local function names its target:
+    // the attribute carries the method name, the first parameter's
+    // `[UnsafeAccessorType]` the target type.
+    let out = build_and_run_vm(
+        r#"namespace t;
+        class Target { public static int Calc(int x) { return x * 2; } }
+        class C {
+            static int Main() {
+                return Doubler(null, 21) == 42 ? 0 : 1;
+                [System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.StaticMethod, Name = "Calc")]
+                static extern int Doubler([System.Runtime.CompilerServices.UnsafeAccessorType("t.Target, t")] object? _, int x);
+            }
+        }"#,
+        &[],
+        None,
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr_str());
+}
+
+#[test]
+fn vm_unsafe_accessor_without_target_throws() {
+    // A target that is not in the unit cannot be called: the call
+    // throws, as .NET does for a missing accessor target.
+    let out = build_and_run_vm(
+        r#"namespace System { public class MissingMethodException { } }
+        namespace t;
+        class C {
+            static int Main() {
+                int r = 0;
+                try { r = Missing(null, 1); }
+                catch (System.MissingMethodException) { r = 42; }
+                return r == 42 ? 0 : 1;
+                [System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.StaticMethod, Name = "NoSuchMethod")]
+                static extern int Missing([System.Runtime.CompilerServices.UnsafeAccessorType("t.Nope, t")] object? _, int x);
+            }
+        }"#,
+        &[],
+        None,
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr_str());
+}
+
+#[test]
+fn vm_property_override_and_hiding_follow_csharp() {
+    // `override` replaces the base member; `new` HIDES it, so a
+    // base-typed receiver still sees the base's implementation.
+    let out = build_and_run_vm(
+        r#"namespace t;
+        class Base { public virtual int P { get { return 1; } } }
+        class Hider : Base { public new int P { get { return 2; } } }
+        class Overrider : Base { public override int P { get { return 3; } } }
+        class C {
+            static int Main() {
+                Base b = new Hider();
+                if (b.P != 1) return 1;
+                Base o = new Overrider();
+                if (o.P != 3) return 2;
+                Hider h = new Hider();
+                if (h.P != 2) return 3;
+                return 0;
+            }
+        }"#,
+        &[],
+        None,
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr_str());
+}
+
+#[test]
+fn vm_get_type_answers_the_runtime_type() {
+    // The runtime type, not the static one: a derived instance seen
+    // through a base-typed receiver keeps its own type, a boxed value
+    // answers its own, and an array answers its element type.
+    let out = build_and_run_vm(
+        r#"namespace t;
+        class Base { }
+        class Derived : Base { }
+        class C {
+            static int Main() {
+                Base b = new Derived();
+                if (b.GetType().Name != "Derived") return 1;
+                Base b2 = new Base();
+                if (b2.GetType().Name != "Base") return 2;
+                int[] a = new int[2];
+                if (a.GetType().Name != "Int32[]") return 3;
+                object o = 5;
+                if (o.GetType().Name != "Int32") return 4;
+                return 0;
+            }
+        }"#,
+        &[],
+        None,
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr_str());
+}
+
+#[test]
+fn vm_primitive_boxing_and_unboxing() {
+    let out = build_and_run_vm(
+        r#"namespace t;
+        class Holder { public object Value = 5; public static object StaticValue; }
+        class C {
+            static object Box(int x) { return x; }
+            static int Take(object o) {
+                if (o is int v) return v;
+                return -1;
+            }
+            static int Main() {
+                object o = 5;
+                if (!(o is int)) return 1;
+                if (o is long) return 2;
+                if (o is string) return 3;
+                if (o is int i) { if (i != 5) return 4; }
+                if ((int)o != 5) return 5;
+                object n = null;
+                if (n is int) return 6;
+                long l = 9;
+                object lo = l;
+                if (!(lo is long)) return 7;
+                if (lo is int) return 8;
+                double d = 1.5;
+                object dobj = d;
+                if (!(dobj is double)) return 9;
+                bool b = true;
+                object bobj = b;
+                if (!(bobj is bool)) return 10;
+                char ch = 'A';
+                object cobj = ch;
+                if (!(cobj is char)) return 11;
+                object s = "hi";
+                if (!(s is string)) return 12;
+                if (s is int) return 13;
+                if (Box(7) is not int) return 14;
+                if (Take(8) != 8) return 15;
+                if (Take("x") != -1) return 16;
+                Holder h = new Holder();
+                if (!(h.Value is int)) return 17;
+                if ((int)h.Value != 5) return 18;
+                Holder.StaticValue = 21;
+                if (!(Holder.StaticValue is int)) return 19;
+                if ((int)Holder.StaticValue != 21) return 20;
+                object[] arr = new object[] { 31, 32 };
+                if (!(arr[0] is int) || (int)arr[0] != 31) return 21;
+                if (!(arr[1] is int) || (int)arr[1] != 32) return 22;
+                object[] sized = new object[1];
+                sized[0] = 41;
+                if (!(sized[0] is int) || (int)sized[0] != 41) return 23;
+                return 0;
+            }
+        }"#,
+        &[],
+        None,
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr_str());
+}
+
+#[test]
+fn vm_static_local_function_uses_enclosing_constants() {
+    // C# forbids capturing variables in a static local function, but a
+    // local constant is not a variable. The constant is visible in the
+    // nested function and must retain its value.
+    let out = build_and_run_vm(
+        r#"namespace t; class C {
+            static int Local(int x) {
+                const int K = 3;
+                const string S = "ok";
+                static int Helper() {
+                    if (S != "ok") return 1;
+                    return K;
+                }
+                return Helper();
+            }
+            static int Main() { return Local(0) == 3 ? 0 : 1; }
+        }"#,
+        &[],
+        None,
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr_str());
+}
+
+#[test]
+fn vm_generic_type_handles_reach_methods_and_local_functions() {
+    let out = build_and_run_vm(
+        r#"namespace t; class C {
+            static int Kind<T>() {
+                if (typeof(T) == typeof(int)) return 1;
+                if (typeof(T) == typeof(string)) return 2;
+                return 0;
+            }
+            static int KindOf<T>(T value) { return Kind<T>(); }
+            static int Relay<T>(T value) { return KindOf(value); }
+            static int Local<T>(T value) {
+                static int Helper() {
+                    if (typeof(T) == typeof(int)) return 1;
+                    if (typeof(T) == typeof(string)) return 2;
+                    return 0;
+                }
+                return Helper();
+            }
+            static int ArrayKind<T>() {
+                System.Type a = typeof(T[]);
+                if (a != typeof(T[])) return 9;
+                if (!a.IsArray || !a.IsSZArray) return 10;
+                if (typeof(T) == typeof(int) && a.Name != "Int32[]") return 11;
+                return 0;
+            }
+            static int Main() {
+                if (Kind<int>() != 1) return 1;
+                if (Kind<string>() != 2) return 2;
+                if (KindOf(5) != 1) return 3;
+                if (KindOf("x") != 2) return 4;
+                if (Relay(7) != 1) return 5;
+                if (Relay("y") != 2) return 6;
+                if (Local(8) != 1) return 7;
+                if (Local("z") != 2) return 8;
+                if (ArrayKind<int>() != 0) return 12;
+                if (ArrayKind<string>() != 0) return 13;
+                return 0;
+            }
+        }"#,
+        &[],
+        None,
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr_str());
+}
+
+#[test]
+fn vm_is_string_uses_the_refcount_tag() {
+    // A string marks the high bit of its refcount word; class objects
+    // keep a plain count and null is excluded by the branch. The
+    // one-character string matters: a tag stored in the header word
+    // would collide with a length of 1.
+    let out = build_and_run_vm(
+        r#"namespace t { class Box { } class c { int main() {
+            object s = "x";
+            object n = null;
+            object b = new Box();
+            object t = s;
+            return (s is string ? 1 : 0) + (t is string ? 2 : 0)
+                 + (n is string ? 4 : 0) + (b is string ? 8 : 0);
+        } } }"#,
+        &[],
         None,
     );
     assert_eq!(out.code, 3, "stderr: {}", out.stderr_str());
@@ -581,4 +882,137 @@ fn vm_static_link_scale_matches_closure() {
     assert_eq!(b.code, 0, "closed stderr: {}", b.stderr_str());
     assert_eq!(a.stdout_str(), "00377411");
     assert_eq!(a.stdout_str(), b.stdout_str(), "linkage must not change behavior");
+}
+
+
+#[test]
+fn vm_shared_dependency_matrix() {
+    // .NET model: consumer.so NEEDS dep1.so + dep2.so, resolves the bodies
+    // at load time (GLOB_DAT), and a C host runs it on the VM. Then the
+    // same consumer without dep2.so must fail at load naming the image.
+    let dir = std::env::temp_dir().join("rubyc_vm_link_matrix");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dep1_src = dir.join("dep1.rc");
+    let dep2_src = dir.join("dep2.rc");
+    let cons_src = dir.join("cons.rc");
+    let host_c = dir.join("host.c");
+    let dep1 = dir.join("dep1.so");
+    let dep2 = dir.join("dep2.so");
+    let cons = dir.join("cons.so");
+    let host = dir.join("host");
+    std::fs::write(
+        &dep1_src,
+        "namespace testns { class Oracle { public int answer() { return 42; } } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &dep2_src,
+        "namespace other { class O { public int n() { return 7; } } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &cons_src,
+        r#"namespace app { class C {
+    [LibraryImport("dep1.so", EntryPoint = "testns.Oracle::answer#0")]
+    int answer();
+    [LibraryImport("dep2.so", EntryPoint = "other.O::n#0")]
+    int n();
+    public int run() { return answer() * 10 + n(); }
+    int main() { printf("{0}", run()); return 0; }
+} }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &host_c,
+        r#"#include <dlfcn.h>
+#include <stdio.h>
+int main(int argc, char **argv) {
+    void *h = dlopen(argv[1], RTLD_NOW);
+    if (!h) { fprintf(stderr, "dlopen: %s\n", dlerror()); return 2; }
+    int (*run)(void) = (int (*)(void))dlsym(h, "run");
+    if (!run) { fprintf(stderr, "dlsym: %s\n", dlerror()); return 3; }
+    printf("%d\n", run());
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    for (src, out) in [(&dep1_src, &dep1), (&dep2_src, &dep2), (&cons_src, &cons)] {
+        let o = build_cli(&[
+            "compile",
+            "-O",
+            "shared",
+            src.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        assert_eq!(o.code, 0, "{}: {}", src.display(), o.stderr_str());
+    }
+    let cc = std::process::Command::new("cc")
+        .args(["-O2", "-o"])
+        .arg(&host)
+        .arg(&host_c)
+        .arg("-ldl")
+        .output()
+        .expect("cc runs");
+    assert!(
+        cc.status.success(),
+        "host build failed: {}",
+        String::from_utf8_lossy(&cc.stderr)
+    );
+
+    let out = vm_exec_bundle(
+        &[
+            ("host", &host),
+            ("cons.so", &cons),
+            ("dep1.so", &dep1),
+            ("dep2.so", &dep2),
+        ],
+        "host",
+        &["./cons.so"],
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr_str());
+    assert_eq!(out.stdout_str(), "427\n");
+
+    let missing = vm_exec_bundle(
+        &[
+            ("host", &host),
+            ("cons.so", &cons),
+            ("dep1.so", &dep1),
+        ],
+        "host",
+        &["./cons.so"],
+    );
+    assert_ne!(missing.code, 0, "a missing dependency must not run");
+    assert!(
+        missing.stderr_str().contains("dep2.so"),
+        "the loader must name the missing image: {}",
+        missing.stderr_str()
+    );
+    // The JIT resolves the same images from RUBYC_BASE/libraries and
+    // must agree with the produced image's stdout.
+    let base = dir.join("base");
+    std::fs::create_dir_all(base.join("libraries")).unwrap();
+    std::fs::copy(&dep1, base.join("libraries").join("dep1.so")).unwrap();
+    std::fs::copy(&dep2, base.join("libraries").join("dep2.so")).unwrap();
+    let jit = std::process::Command::new(crate::tests::common::rubyc_path())
+        .arg("run")
+        .arg(&cons_src)
+        .env("RUBYC_BASE", &base)
+        .output()
+        .expect("rubyc run");
+    assert!(
+        jit.status.success(),
+        "JIT run failed: {}",
+        String::from_utf8_lossy(&jit.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&jit.stdout).trim(),
+        out.stdout_str().trim(),
+        "run and the produced image must agree"
+    );
+    for f in [&dep1_src, &dep2_src, &cons_src, &host_c, &dep1, &dep2, &cons, &host] {
+        let _ = std::fs::remove_file(f);
+    }
 }

@@ -377,10 +377,11 @@ post-build = 'mkdir -p "$RUBYC_BASE/libraries" && cp out/*.so "$RUBYC_BASE/libra
 }
 
 #[test]
-fn install_libs_missing_tree_errors_loudly() {
-    // No pulled tree and no pull script above an empty dir: loud error
-    // naming the fix, never a bare OS error (and no network touched).
-    let workspace = Workspace::new("install_no_tree");
+fn install_libs_without_project_errors_loudly() {
+    // No project or solution anywhere upward: loud error naming the fix,
+    // never a bare OS error. The compiler does not search out for or pull
+    // any source tree of its own (that is tooling's job, not the driver's).
+    let workspace = Workspace::new("install_no_project");
     let empty = workspace.0.join("empty");
     std::fs::create_dir_all(&empty).unwrap();
     let mut cmd = Command::new(rubyc_path());
@@ -388,9 +389,9 @@ fn install_libs_missing_tree_errors_loudly() {
     cmd.env("RUBYC_BASE", workspace.0.join("base"));
     cmd.current_dir(&empty);
     let out = exec(&mut cmd);
-    assert_eq!(out.code, 1, "must fail without a tree");
+    assert_eq!(out.code, 1, "must fail without a project or solution");
     assert!(
-        out.stderr_str().contains("pull"),
+        out.stderr_str().contains("no .rcs/.rcp found upward"),
         "must name the fix, stderr: {}",
         out.stderr_str()
     );
@@ -783,5 +784,164 @@ optimize = true
         out.stderr_str().contains("unknown solution profile"),
         "loud error names the profile: {}",
         out.stderr_str()
+    );
+}
+
+#[test]
+fn dynamic_project_rejects_a_non_shared_output() {
+    // Dynamic linking consumes installed images; an executable has no
+    // loader for them. This used to build silently with unresolved
+    // consumed imports.
+    let workspace = Workspace::new("dynamic_exe");
+    workspace.write(
+        "src/app.rc",
+        "namespace app { class P { int main() { return 0; } } }\n",
+    );
+    let rcp = workspace.write(
+        "app.rcp",
+        r#"[meta]
+name = "dyn_exe"
+version = "1.0.0"
+[target]
+platform = "linux_x86_64"
+language = "rubyc"
+output = "exe"
+[build]
+sources = ["src/**/*.rc"]
+entry-point = "main"
+dynamic = true
+[libs]
+ruby_c = []
+"#,
+    );
+    let mut cmd = Command::new(rubyc_path());
+    cmd.arg("build").arg(&rcp).arg("-P").arg("-Q");
+    let out = exec(&mut cmd);
+    assert_ne!(out.code, 0, "dynamic+exe must be rejected");
+    let text = out.stderr_str();
+    assert!(
+        text.contains("dynamic") && text.contains("shared"),
+        "the error must name both the flag and the required output: {text}"
+    );
+}
+
+#[test]
+fn dead_project_keys_are_rejected() {
+    // A typo in a project file used to be silently ignored (the flag
+    // simply never took effect).
+    let workspace = Workspace::new("dead_key");
+    workspace.write(
+        "src/app.rc",
+        "namespace app { class P { int main() { return 0; } } }\n",
+    );
+    let rcp = workspace.write(
+        "app.rcp",
+        r#"[meta]
+name = "dead_key"
+version = "1.0.0"
+[target]
+platform = "linux_x86_64"
+output = "exe"
+[build]
+sources = ["src/**/*.rc"]
+entry-point = "main"
+optimizee = true
+"#,
+    );
+    let mut cmd = Command::new(rubyc_path());
+    cmd.arg("build").arg(&rcp).arg("-P").arg("-Q");
+    let out = exec(&mut cmd);
+    assert_ne!(out.code, 0, "a dead project key must be rejected");
+    let text = out.stderr_str();
+    assert!(
+        text.contains("unknown") && text.contains("optimizee"),
+        "the error must name the dead key: {text}"
+    );
+}
+
+#[test]
+fn project_external_libraries_reach_the_linker() {
+    // `[libs] external` used to be parsed and dropped. A missing library
+    // named there must fail the link by that path, which proves it is
+    // passed through; the [LibraryImport] stub makes imports non-empty.
+    let workspace = Workspace::new("external_lib");
+    workspace.write(
+        "src/app.rc",
+        r#"namespace app {
+class host {
+    [LibraryImport("nope", EntryPoint = "f")]
+    int f();
+    int main() { return this.f(); }
+}
+}
+"#,
+    );
+    let rcp = workspace.write(
+        "app.rcp",
+        r#"[meta]
+name = "external_lib"
+version = "1.0.0"
+[target]
+platform = "linux_x86_64"
+output = "exe"
+[build]
+sources = ["src/**/*.rc"]
+entry-point = "main"
+[libs]
+external = ["missing/libnope.so"]
+ruby_c = []
+"#,
+    );
+    let mut cmd = Command::new(rubyc_path());
+    cmd.arg("build").arg(&rcp).arg("-P").arg("-Q");
+    let out = exec(&mut cmd);
+    assert_ne!(out.code, 0, "a missing external library must fail");
+    let text = out.stderr_str();
+    assert!(
+        text.contains("cannot read library") && text.contains("libnope.so"),
+        "the linker must report the project-relative path: {text}"
+    );
+}
+
+#[test]
+fn dead_solution_keys_are_rejected() {
+    let workspace = Workspace::new("dead_solution_key");
+    workspace.write(
+        "app/app.rc",
+        "namespace app { class P { int main() { return 0; } } }\n",
+    );
+    workspace.write(
+        "app/app.rcp",
+        r#"[meta]
+name = "app"
+version = "1.0.0"
+[target]
+platform = "linux_x86_64"
+output = "exe"
+[build]
+sources = ["*.rc"]
+entry-point = "main"
+"#,
+    );
+    let rcs = workspace.write(
+        "all.rcs",
+        r#"solution "all"
+version = "1.0.0"
+
+[[project]]
+path = "app/app.rcp"
+
+[hooks]
+pre-solutionn = "oops"
+"#,
+    );
+    let mut cmd = Command::new(rubyc_path());
+    cmd.arg("build").arg(&rcs).arg("-P").arg("-Q");
+    let out = exec(&mut cmd);
+    assert_ne!(out.code, 0, "a dead solution key must be rejected");
+    let text = out.stderr_str();
+    assert!(
+        text.contains("unknown") && text.contains("pre-solutionn"),
+        "the error must name the dead key: {text}"
     );
 }

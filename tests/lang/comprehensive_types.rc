@@ -1,0 +1,31 @@
+namespace TestTypes {
+    public class TypesTest {
+        public static void Main() {
+            bool b = true;
+            byte by = 1;
+            sbyte sb = -1;
+            char c = 'a';
+            decimal d = 1.0m;
+            double db = 1.0;
+            float f = 1.0f;
+            int i = 5;
+            uint ui = 5;
+            long l = 5;
+            ulong ul = 5;
+            short sh = 5;
+            ushort ush = 5;
+            nint ni = 5;
+            nuint nui = 5;
+            string s = "hello";
+            object obj = null;
+            dynamic dyn = 5;
+            int? ni2 = null;
+            string? ns = null;
+            int[] arr = new int[5];
+            int[,] arr2d = new int[2,2];
+            int[][] jagged = new int[2][];
+            var tuple = (1, "two", 3);
+            var named = (x: 1, y: "two");
+        }
+    }
+}

@@ -1,0 +1,16 @@
+namespace TestDecl {
+    public interface ITest { void M(); }
+    public class C { }
+    public struct S { public int X; }
+    public enum E { A, B, C }
+    delegate void D();
+    
+    public class DeclTest : ITest {
+        public void M() {}
+        public static void Main() {
+            S s = new S();
+            E e = E.A;
+            D d = () => {};
+        }
+    }
+}

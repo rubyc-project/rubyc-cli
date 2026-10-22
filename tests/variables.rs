@@ -336,8 +336,40 @@ exec_case!(double_negation, "int x = 5; printf(\"{0}\", -(-x));", "5");
 
 exec_case!(
     large_i64_values,
-    "printf(\"{0}\", 100000 * 100000);",
+    // `100000 * 100000` is `int * int` in C# and wraps to 1410065408;
+    // 64-bit arithmetic needs `long` operands.
+    "long a = 100000; long b = 100000; printf(\"{0}\", a * b);",
     "10000000000"
+);
+exec_case!(
+    printf_prints_a_string_literal,
+    "printf(\"{0}\", \"hello\");",
+    "hello"
+);
+exec_case!(
+    printf_prints_a_runtime_string,
+    "string s = \"12\" + \"345\"; printf(\"[{0}]\", s);",
+    "[12345]"
+);
+exec_case!(
+    printf_prints_a_converted_value,
+    "int x = 12345; printf(\"[{0}]\", x.ToString());",
+    "[12345]"
+);
+exec_case!(
+    printf_encodes_non_ascii_utf8,
+    "printf(\"{0}\", \"é\");",
+    "é"
+);
+exec_case!(
+    uint_prints_as_unsigned,
+    "uint u = (uint)-1; printf(\"{0}\", u);",
+    "4294967295"
+);
+exec_case!(
+    int_cast_print_truncates,
+    "printf(\"{0}\", (int)4294967296);",
+    "0"
 );
 exec_case!(zero_value, "int z = 0; printf(\"{0}\", z);", "0");
 exec_case!(value_zero_from_math, "printf(\"{0}\", 5 - 5);", "0");

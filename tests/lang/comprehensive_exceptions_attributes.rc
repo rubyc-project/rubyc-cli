@@ -1,0 +1,18 @@
+// A no-BCL program must declare the exception types it throws and
+// catches: the compiler resolves `catch (T)` by the object's real type, so
+// an undeclared name has nothing to compare against (and is reported).
+namespace System { public class Exception { } }
+
+namespace TestExc {
+    public class ExcTest {
+        [System.Obsolete]
+        public void M() {
+            try {
+                throw new System.Exception();
+            } catch (System.Exception) {
+            } finally {
+            }
+        }
+        public static void Main() {}
+    }
+}

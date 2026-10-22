@@ -28,18 +28,40 @@ printf("{0} + {1} = {2}\n", 2, 3, 5);   // → 2 + 3 = 5
 
 | # | Name | Type | Notes |
 |---|---|---|---|
-| 1 | `format` | string **literal** | literal text + `{N}` placeholders |
-| 2+ | `args…` | integer expressions | consumed left-to-right by `{N}` |
+| 1 | `format` | string **literal** | literal text + `{…}` items |
+| 2+ | `args…` | scalar expressions | consumed by item index |
 
 ### Format-string rules
 
-- Placeholders are **zero-based** (`{0}` is the first argument) and may
-  repeat or appear in any order:
+- Items are **zero-based** (`{0}` is the first argument) and may repeat or
+  appear in any order:
   ```rubyc
   printf("{1} before {0}", a, b);
   printf("{0} and {0}", x);
   ```
-- Integers print as **signed decimal**, including a `-` for negatives.
+- A plain item (`{0}`) keeps the established output: integers as signed
+  decimal, strings as text, `bool` as `1`/`0`, `char` as the character.
+- An item may carry alignment and/or a format:
+  `{index[,width][:format]}`. Negative width left-aligns:
+  ```rubyc
+  printf("[{0,5}]", 7);         // → [    7]
+  printf("[{0,-5}]", 7);        // → [7    ]
+  printf("[{0:D3}]", 7);        // → [007]
+  printf("[{0,-8:D2}]", 7);     // → [07      ]
+  ```
+- Supported formats (integers):
+  | Format | Meaning | Example |
+  |---|---|---|
+  | `D` / `Dn` | decimal, at least `n` digits after the sign (up to 31) | `-12` as `D5` → `-00012` |
+  | `X` / `Xn` | hexadecimal, uppercase, type width, at least `n` digits | `255` as `X4` → `00FF` |
+  | `x` / `xn` | hexadecimal, lowercase | `255` as `x4` → `00ff` |
+  | `F` / `Fn` | decimal plus `.` and `n` zeros (`F` = `F2`, `F0` drops the point) | `7` as `F2` → `7.00` |
+  | `G` | plain decimal | `7` as `G` → `7` |
+- `X` uses the type's two's-complement width: `(short)-1` → `FFFF`,
+  `(int)-1` → `FFFFFFFF`, `(long)-1` → `FFFFFFFFFFFFFFFF`.
+- `ulong` prints all 20 digits; unsigned division and remainder are used.
+- A formatted bool/char/string is rendered C#-style (`True`, one
+  character, the text); a numeric format on a string or bool reports.
 - Segments evaluate arguments **once each**, before any output is written,
   in source order:
   ```rubyc
@@ -57,10 +79,14 @@ printf("{0} + {1} = {2}\n", 2, 3, 5);   // → 2 + 3 = 5
 | Unclosed brace | `printf("{0", x);` | `'{' without matching '}'` |
 | Non-digit placeholder | `printf("{x}", y);` | invalid placeholder |
 | Index past last argument | `printf("{3}", a);` | placeholder {3} but only 1 argument(s) given |
+| Bad alignment | `printf("{0,1x}", a);` | invalid alignment |
+| Unsupported format | `printf("{0:N2}", a);` | unsupported integer format |
+| Format on a string/bool | `printf("{0:D2}", "x");` | cannot be applied |
+| `float`/`double` argument | `printf("{0}", 1.5);` | needs a shortest-round-trip formatter |
 
-There is deliberately **no** width/precision/alignment syntax (`%5d`,
-`%-08x` …). Formatting beyond signed decimal arrives with strings and
-`RubyC.Console`.
+`float`/`double` formatting is not implemented yet; it reports instead of
+printing the IEEE bit pattern. Custom numeric patterns (`000`, `#.##`)
+and `N` (grouping) are not supported.
 
 ### Behavior notes
 
@@ -74,7 +100,9 @@ Exact aliases of `printf` (same parameters, same rules, same return).
 
 ## eprintf
 
-Identical to `printf` except output goes to **fd 2 (stderr)**:
+Identical to `printf` except output goes to **fd 2 (stderr)**. Plain
+numeric arguments are supported; formatted items, strings and floats on
+the stderr path report (there is no stderr string-write instruction yet):
 
 ```rubyc
 if (divisor == 0) {

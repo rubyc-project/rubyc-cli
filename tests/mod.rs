@@ -5,7 +5,13 @@
 //! plain `cargo test` and share [`common`] for process plumbing: bounded
 //! output capture, hard timeouts, and binary discovery.
 
-pub(crate) mod common;
+pub(crate) mod arrays;
+mod calls;
+mod delegates;
+mod generics;
+mod using;
+mod value_to_string;
+mod common;
 
 // language features, executed through both JIT and ELF paths
 mod access_modifiers;
@@ -25,6 +31,7 @@ mod cli_pipes;
 mod extension_dirs;
 mod diagnostics_quality;
 mod jit;
+mod int32;
 mod lints;
 mod native_exec;
 mod native_exec_vm;
@@ -37,6 +44,12 @@ mod stress_test;
 
 // native targets and interop
 mod exe_static_vm;
+mod lang_fixtures;
+mod negative;
+mod events;
+mod exceptions;
+mod indexers;
+mod patterns;
 mod library_matrix;
 mod native_interop;
 mod target_os_consistency;

@@ -1,0 +1,12 @@
+namespace TestStr {
+    public class StrTest {
+        public static void Main() {
+            string s1 = "hello";
+            string s2 = @"verbatim";
+            string s3 = $"interpolated {s1}";
+            string s4 = $@"interp verbatim {s1}";
+            string name = "world";
+            string s5 = $"hello {name}";
+        }
+    }
+}

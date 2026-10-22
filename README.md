@@ -24,7 +24,7 @@ RubyC compiles a large, growing subset of C# — classes, generics-shaped code,
 LINQ-style helpers, real-world library patterns — straight to native executables
 and shared libraries. No .NET runtime, no VM, no GC: the binary stands alone.
 
-> **Status (September 2026): in active development.** The frontend (lexer →
+> **Status (October 2026): in active development.** The frontend (lexer →
 > parser → semantic → lowering) compiles thousands of real `dotnet/runtime`
 > files; the current campaign is driving `System.Private.CoreLib` through
 > lowering to zero errors, then the remaining 180 pulled libraries. See
@@ -208,14 +208,15 @@ fail loudly instead. Full contract:
 [documentation/compiler/library-format.md](documentation/compiler/library-format.md).
 
 ```bash
-rubyc install libs                        # pull (if needed), build stale libs, install
+rubyc install libs                        # build stale libs of nearest project/solution, install
 rubyc install libs --format both          # shared + static passes
 rubyc install libs --format both --jobs 6 # concurrent backfill
 ```
 
-`install libs` is idempotent per stage: it pulls only when the tree is
-missing or behind upstream, and rebuilds only libraries whose installed
-image predates their inputs (same hash the fragment consume path checks).
+`install libs` finds its target the same way `rubyc build` does: the nearest
+`.rcs`/`.rcp` walking up from the working directory. It rebuilds only
+libraries whose installed image predates their inputs (same hash the fragment
+consume path checks).
 Fragments ride inside the image by default (post-magic table in `.so`,
 `<lib>.rci` member in `.a`) — consumers prefer embedded bytes, then the
 legacy section/sidecar forms. `--no-embed-types` builds pure-ABI images
@@ -356,14 +357,15 @@ languages are built directly into `rubyc-core`.
 
 - **`rubyc-core`** — compiler stages (lexer → parser → AST → bytecode →
   semantic → IR → regalloc → x86-64), the plugin FFI/loader, the project
-  system, i18n, and the C embedding ABI. The RubyC and RubyC-Assembly
+  system, i18n, and the project system. The RubyC and RubyC-Assembly
   language frontends are built in. See its
-  [README](rubyc-core/README.md) for every exposed function.
+  [README](rubyc-core/README.md) for the exposed API.
 - **`rubyc-target`** — the polymorphic `TargetBackend` trait, the registry, and
-  discovery. See [README](rubyc-core/plugins/targets/rubyc-target/README.md).
+  discovery. The plugin crate lives in
+  `rubyc-core/plugins/targets/rubyc-target/`.
 - **`rubyc-target-linux-x86_64`** — the x86-64 backend (encoder, regalloc,
   ELF writer, JIT). See
-  [README](rubyc-core/plugins/targets/rubyc-target-linux-x86_64/README.md).
+  `rubyc-core/plugins/targets/rubyc-target-linux-x86_64/`.
 - **`rubyc-target-windows-x86_64`** — registered Windows stub (triple
   `x86_64-pc-windows-msvc`; every method refuses loudly). No backend yet.
 
@@ -419,7 +421,7 @@ Core stages (relative to `rubyc-core/src/`):
 
 ## 📍 Where the project stands
 
-**Done — the compiler proper (1100+ tests green):**
+**Done — the compiler proper (1500+ tests green):**
 full C# parsing surface (nullable, patterns, LINQ shapes, attributes,
 preprocessor with `#if` logic, `using` aliases/statics, file-scoped
 namespaces); name/scope resolution; overload resolution (arity, defaults,
@@ -448,8 +450,8 @@ across the set; standalone static executables link against
 ## ✅ Todo: complete vs remaining
 
 ### ✅ Done
-- [x] Lexer/parser for the full C# surface above (1100+ tests and counting:
-      820 core, 94 x86-64 backend, 6 windows stub, 265+ CLI end-to-end)
+- [x] Lexer/parser for the full C# surface above (1500+ tests and counting:
+      970 core, 98 x86-64 backend, 6 windows stub, 474 CLI end-to-end)
 - [x] Semantic analysis: scopes, type tables, inheritance, access, const folding
 - [x] Lowering: calls (static/virtual/import), ctors, fields, properties, switches
 - [x] Overload + extension + generic-tolerant resolution
@@ -478,7 +480,9 @@ across the set; standalone static executables link against
       and `--profile` solution profiles
 
 ### ⬜ Remaining — runtime correctness and language parity
-- [x] Drive `System.Private.CoreLib` lowering to zero errors (builds and installs)
+- [x] Drive `System.Private.CoreLib` lowering to zero errors (built and
+      installed; the current tree is one step further, on the
+      generic-class type arguments a generic method's `typeof(T)` needs)
 - [x] Backend validation for CoreLib scale (vtable layout, field offsets,
       image emission for ~1800 classes — built, installed, matrix-green)
 - [x] Implicit CoreLib reference for dependent libraries (`using`-driven
@@ -487,10 +491,10 @@ across the set; standalone static executables link against
 - [ ] Execute + verify built artifacts on the VM (`scp`/`ssh rubyc-dev`
       workflow: build locally, run natively, compare output — VM suites
       green)
-- [x] Standalone-exe smoke on the VM (`tests/exe_static_vm.rs`: hello,
+- [ ] Standalone-exe smoke on the VM (`tests/exe_static_vm.rs`: hello,
       hashing `38600999`, console `hello-static-exe`, optimize/strip
-      parity — all green via `examples/exe_smoke/host_stubs.c` shims
-      plus `RUBYC_ALLOW_MISSING_IMPORTS=1` for uncalled PAL imports)
+      parity — run against `examples/exe_smoke/host_stubs.c` shims for
+      the PAL natives they exercise; linking is strict)
 - [ ] Runtime-correctness workstream (current placeholders — delegates,
       explicit accessors, P/Invoke bodies, decimal precision — need real
       implementations before programs run *correctly*, not just compile)
@@ -558,7 +562,7 @@ development; more locales later). Lowering errors name their method
 
 ## 🧪 Testing
 
-1100+ tests (790 core lib, 93 x86-64 backend, 6 windows stub, 254 CLI
+1500+ tests (970 core lib, 98 x86-64 backend, 6 windows stub, 474 CLI
 end-to-end) run via `cargo test -p rubyc-core --lib` (seconds) plus the
 backend and CLI suites. The suite
 covers parser round-trips, bytecode identity, access modifiers, lint policy,

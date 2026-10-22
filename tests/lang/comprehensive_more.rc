@@ -1,0 +1,51 @@
+// A no-BCL program must declare the exception types it catches: the
+// compiler resolves `catch (T)` and `is T` by the object's real type, so
+// an undeclared name has nothing to compare against (and is reported).
+namespace System { public class Exception { } }
+
+using System;
+
+namespace MoreTest {
+    // delegate
+    delegate void MyDelegate();
+    
+    // event
+    public class EventClass {
+        public event MyDelegate MyEvent;
+        void Trigger() { MyEvent?.Invoke(); }
+    }
+    
+    // struct
+    struct Point {
+        public int X, Y;
+    }
+    
+    // enum
+    enum Color { Red, Green, Blue }
+    
+    // record (if supported)
+    // record Person(string Name, int Age);
+    
+    public class Test {
+        public void Test() {
+            // nameof
+            string n = nameof(Test);
+            
+            // and/or/not (operators in C# 9+ pattern matching context, also keywords)
+            bool a = true && false; // && is operator, and is keyword in some contexts
+            bool b = true || false;
+            bool c = !true;
+            
+            // when (exception filter)
+            try { } catch (Exception) when (n.Length > 0) { }
+            
+            // where (generic constraint) - tested in generics
+        }
+
+        public static void Main()
+        {
+            Test t = new Test();
+            t.Test();
+        }
+    }
+}

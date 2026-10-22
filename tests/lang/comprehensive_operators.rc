@@ -1,0 +1,30 @@
+namespace TestOps {
+    public class OpsTest {
+        public static void Main() {
+            int a = 10, b = 3;
+            int add = a + b;
+            int sub = a - b;
+            int mul = a * b;
+            int div = a / b;
+            int mod = a % b;
+            int neg = -a;
+            bool not = !true;
+            int xor = a ^ b;
+            int and = a & b;
+            int or = a | b;
+            int shl = a << 1;
+            int shr = a >> 1;
+            bool eq = a == b;
+            bool neq = a != b;
+            bool lt = a < b;
+            bool gt = a > b;
+            bool le = a <= b;
+            bool ge = a >= b;
+            bool land = true && false;
+            bool lor = true || false;
+            int inc = a++; int dec = a--;
+            a += b; a -= b; a *= b; a /= b; a %= b;
+            object o = a;
+        }
+    }
+}

@@ -1,0 +1,67 @@
+// A no-BCL program must declare the exception types it throws and
+// catches: the compiler resolves `catch (T)` by the object's real type, so
+// an undeclared name has nothing to compare against (and is reported).
+namespace System { public class Exception { } }
+
+namespace TestLang {
+    public interface ITest {
+        void DoWork();
+    }
+    
+    public class BaseClass {
+        public virtual void VirtualMethod() {}
+    }
+    
+    public class KeywordsTest : BaseClass, ITest {
+        public int publicField;
+        private int privateField;
+        protected int protectedField;
+        internal int internalField;
+        static readonly int readonlyField = 5;
+        const int constField = 10;
+        sealed class SealedClass {}
+        abstract class AbstractClass {}
+        volatile int volatileField;
+        
+        public override void VirtualMethod() {
+            base.VirtualMethod();
+        }
+        
+        public void DoWork() {
+            if (true) {} else {}
+            while (false) { break; continue; }
+            do {} while (false);
+            for (int i = 0; i < 10; i++) {}
+            switch (1) {
+                case 1: break;
+                default: break;
+            }
+            goto L; L:;
+            lock (this) {}
+            try { throw new System.Exception(); }
+            catch (System.Exception) { }
+            finally {}
+            checked { int x = 1; }
+            unchecked { int x = 1; }
+        }
+        
+        public static void StaticMethod() {}
+        public override string ToString() { return "test"; }
+        public new void NewMethod() {}
+        
+        public async void AsyncMethod() {
+            await global::System.Threading.Tasks.Task.Delay(1);
+        }
+        
+        public void RefOutInParams(ref int r, out int o, in int i, params int[] p) {
+            o = 1;
+        }
+        
+        public void IsAs(object obj) {
+            if (obj is KeywordsTest) {}
+            var x = obj as KeywordsTest;
+        }
+        
+        public static void Main() {}
+    }
+}

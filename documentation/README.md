@@ -16,14 +16,20 @@
   variables, classes, interop, lints
 - [guides/interop.md](guides/interop.md) — consuming C libraries from RubyC
   and RubyC libraries from C
-- [guides/embedding-c.md](guides/embedding-c.md) — link librubyc.so from C
+- [guides/embedding-c.md](guides/embedding-c.md) — embedding the compiler, and
+  calling into a compiled RubyC library from C
 - [guides/embedding-rust.md](guides/embedding-rust.md) — driver API from Rust
+- [guides/bare-metal.md](guides/bare-metal.md) — bare-metal target guide
 
 **Compiler**
 - [compiler/benchmarks.md](compiler/benchmarks.md) — performance harness,
   methodology, baseline numbers, acceptance gates
 - [compiler/architecture.md](compiler/architecture.md) — pipeline, module
   map, register model, calling convention, relocations, folding
+- [compiler/library-format.md](compiler/library-format.md) — the `.rci`
+  sidecar: what a library publishes, and how a consumer reads it
+- [compiler/band-aids.md](compiler/band-aids.md) — the ledger of
+  shortcuts in the compiler, and what each one costs
 
 **Language**
 - [language/types-and-variables.md · language/control-flow.md · language/macros.md](language/types-and-variables.md)
@@ -50,9 +56,8 @@
 **Reference**
 - [reference/cli.md](reference/cli.md) — commands and flags
 - [reference/diagnostics.md](reference/diagnostics.md) — every E/W code with fixes
+- [reference/project-system.md](reference/project-system.md) — project system (.rcs/.rcp)
+- [reference/preprocessing.md](reference/preprocessing.md) — preprocessor directives
 
 Pages land in the same milestone as the feature they document; this index
 is updated every phase.
-- [reference/project-system.md](reference/project-system.md) — project system (.rcs/.rcp)
-- [guides/bare-metal.md](guides/bare-metal.md) — bare-metal target guide
-- [reference/preprocessing.md](reference/preprocessing.md) — preprocessor directives

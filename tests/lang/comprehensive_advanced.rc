@@ -1,0 +1,10 @@
+namespace TestAdv {
+    public class AdvTest {
+        unsafe void UnsafeMethod(int* p) {}
+        public static void Main() {
+            int[] arr = new int[10];
+            fixed (int* p = arr) {}
+            int* stack = stackalloc int[5];
+        }
+    }
+}

@@ -28,18 +28,24 @@ enable mixed arithmetic and better error messages.
 An object is a pointer to a heap block. The block layout is:
 
 ```
-┌─────────────────────┐
-│ vtable ptr (8 bytes)│  ← only for classes with vtables
-│ refcount (8 bytes)  │  ← only for refcounted GC
-├─────────────────────┤
-│ field 0 (8 bytes)   │  ← byte offset 16 (or 8 if no header)
-│ field 1 (8 bytes)   │
-│ ...                 │
-└─────────────────────┘
+┌─────────────────────────┐
+│ vtable ptr (8 bytes)    │  ← only for classes with vtables
+│ refcount (8 bytes)      │  ← only for refcounted GC
+│ runtime type (8 bytes)  │  ← only for classes that carry one
+├─────────────────────────┤
+│ field 0 (8 bytes)       │  ← byte offset 24 (or less if no header)
+│ field 1 (8 bytes)       │
+│ ...                     │
+└─────────────────────────┘
 ```
 
 The exact header size depends on the language. A language without vtables
 or refcounting has a header size of 0.
+
+RubyC's class instances carry all three: the runtime type is the
+descriptor of the instance's instantiation, and it is what carries a
+generic class's type arguments (see
+[object-model.md](object-model.md)).
 
 ### Strings
 

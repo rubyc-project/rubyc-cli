@@ -1,0 +1,18 @@
+namespace TestCF {
+    public class CFTest {
+        public static void Main() {
+            if (true) {} else {}
+            while (false) { break; continue; }
+            do {} while (false);
+            for (int i = 0; i < 10; i++) {}
+            foreach (var x in new int[] {1,2,3}) {}
+            switch (1) {
+                case 1: break;
+                case 2: goto L;
+                default: break;
+            }
+            L:;
+            return;
+        }
+    }
+}

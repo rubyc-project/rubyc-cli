@@ -1,0 +1,12 @@
+namespace TestLam {
+    delegate int IntDel(int x);
+    public class LamTest {
+        public static void Main() {
+            int y = 5;
+            IntDel f = x => x + y; // closure
+            int r = f(3);
+            System.Func<int,int> f2 = x => x * 2;
+            System.Action a = () => {};
+        }
+    }
+}

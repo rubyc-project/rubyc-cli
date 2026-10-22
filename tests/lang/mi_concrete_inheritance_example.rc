@@ -1,0 +1,110 @@
+// Multiple concrete-class inheritance acceptance fixture.
+// Origin: user example (2026-10-18) — "example as this file used to compile and work".
+// Must compile AND run correctly after Phase 2 task 2.2.
+//
+// Two C# 14 corrections applied with user approval (make it right, not permissive):
+//   1. `public static Main()`  ->  `public static int Main()` (C# requires an explicit entry-point return type)
+//   2. `private int Plus10`     ->  `private static int Plus10` (CS0120: no instance member call from static context)
+//
+// Covers: multiple concrete bases (MyClass3 : MyClass1, MyClass2) with members unioned
+// (Add/Divide from base 1, Subtract/Multiply from base 2), interface conformance inherited
+// through bases, interface-typed reference dispatch, static class + static method call,
+// while/for control flow, and a private static helper.
+//
+// Harness contract (tests/lang_fixtures.rs): builds, exits 0, and
+// prints the block below.
+//@exit 0
+//@stdout mi_concrete_inheritance_example.expected
+//
+// NOTE ON THE ORIGINAL HEADER, kept because it was the user's text: the
+// four MyClass3 lines below were written with the arguments transposed
+// relative to the calls in Main. The calls are `Add(10, 100)`,
+// `Subtract(10, 100)`, `Divide(10, 100)`, `Multiply(10, 100)`, so the
+// correct values are 110, 110, 0 and 1000: `10 / 100` is 0 in integer
+// arithmetic, which is what `MyClass1.Divide` (the original `x / y`)
+// computes. The compiler is right and the header was wrong; the
+// expected-output file records what the program actually does.
+//
+// Original header, for the record:
+//   MyClass3.Add(10, 100): 110
+//   MyClass3.Subtract(100, 10): 110
+//   MyClass3.Divide(100, 10): 10
+//   MyClass3.Multiply(10, 100): 1000
+//   Plus10(10): 20
+//   b = 10
+//   i = 0 .. i = 9  (repeated while b = 10, 9, ... 2)
+//   myClass1.Add(20, 200): 220
+//   iMyClass1.Add(20, 200): 220
+//   MyClass4.StaticSum(10, 100): 110
+//   DONE!
+
+namespace Test;
+public interface IMyInterface1 {
+	int Add(int x, int y);
+}
+
+public interface IMyInterface2 {
+	int Subtract(int x, int y);
+}
+
+public class MyClass1 : IMyInterface1 {
+	public int Add(int x, int y)
+	{
+		return x + y;
+	}
+	public int Divide(int x, int y)
+	{
+		return x / y;
+	}
+}
+
+public class MyClass2 : IMyInterface2 {
+	public int Subtract(int x, int y)
+	{
+		return x + y;
+	}
+
+	public int Multiply(int x, int y)
+	{
+		return x * y;
+	}
+}
+
+public class MyClass3 : MyClass1, MyClass2 {
+	 }
+
+public static class MyClass4 {
+	public static int Main() {
+		var myClass3 = new MyClass3();
+		printf("MyClass3.Add(10, 100): {0}\n", myClass3.Add(10, 100));
+		printf("MyClass3.Subtract(100, 10): {0}\n", myClass3.Subtract(10, 100));
+		printf("MyClass3.Divide(100, 10): {0}\n", myClass3.Divide(10, 100));
+		printf("MyClass3.Multiply(10, 100): {0}\n", myClass3.Multiply(10, 100));
+		printf("Plus10(10): {0}\n", Plus10(10));
+		int b = 10;
+		while (b > 1) {
+			printf("b = {0}\n=========================================\n", b);
+			for (int i = 0; i < 10; i++) {
+				printf("i = {0}\n", i);
+			}
+			b--;
+		}
+		var myClass1 = new MyClass1();
+		printf("myClass1.Add(20, 200): {0}\n", myClass1.Add(20, 200));
+		IMyInterface1 iMyClass1 = new MyClass1();
+		printf("iMyClass1.Add(20, 200): {0}\n", iMyClass1.Add(20, 200));
+		// In .NET, calling an instance method on a class name is a compile error
+		// (CS1061/CS0120). To exercise the static-call path, use a static method:
+		printf("MyClass4.StaticSum(10, 100): {0}\n", MyClass4.StaticSum(10, 100));
+		printf("DONE!\n");
+		return 0;
+	}
+
+	private static int Plus10(int x) {
+		return x + 10;
+	}
+
+	public static int StaticSum(int x, int y) {
+		return x + y;
+	}
+}

@@ -12,40 +12,49 @@ rubyc <command> [flags]
 
 | Command | Purpose | Output default |
 |---|---|---|
-| `compile` | source → chosen `-O` format (bytecode by default) | stdout |
-| `build` | source → native executable (`-O exe` fixed); auto-discovers `.rcs`/`.rcp` when no file given | `out` (or `out.exe` on Windows) |
+| `compile` | alias for `build` | same as `build` |
+| `build` | source → native executable (`-O exe` default), shared library, or bytecode; auto-discovers `.rcs`/`.rcp` when no file given | `out` (or `out.exe` on Windows) |
 | `run` | compile in-memory + execute immediately; accepts source *or* bytecode; auto-discovers `.rcs`/`.rcp` | program's stdout |
 | `lint` | check source for lint diagnostics without compiling; auto-discovers `.rcs`/`.rcp` | diagnostics on stderr |
 | `dump` | human-readable dump of bytecode input | stdout |
 | `check-roundtrip` | parse → encode → decode → structural compare; CI guard | report on stderr |
 | `list` | list installed plugins (`--remote` for registry listing) | stdout |
-| `install` | install a target plugin from the registry (stub) | — |
-| `download` | download a plugin from the registry (stub) | — |
-| `remove` | remove an installed plugin (stub) | — |
-| `update` | update installed plugins (stub) | — |
+| `install` | install a target plugin from the registry, or the libraries of the nearest project/solution | — |
+| `download` | download a plugin from the registry | — |
+| `remove` | remove an installed plugin, or a project from the nearest solution | — |
+| `update` | update installed plugins | — |
+| `new` / `create` | scaffold a project (`.rcp`) or solution (`.rcs`) | — |
+| `add` | record a project in the nearest `.rcs` | — |
 
 ## Flags
 
 | Flag | Long form | Values | Meaning |
 |---|---|---|---|
-| `-i FILE` | `--in` / `--file` | path or `-` | input; omitted **or `-`** = stdin |
+| `-i FILE` | `--in` | path or `-` | input; omitted **or `-`** = stdin |
 | `-o FILE` | `--out` | path or `-` | output; `-` = stdout |
-| `-I FMT` | `--in-format` | `auto` · `source` · `bytecode` | force input interpretation |
-| `-O FMT` | `--out-format` | `bytecode` · `bytecode-shebang` · `base64-bytecode` · `exe` · `shared` | output format |
+| `-I FMT` | `--in-format` | `auto` · `source` · `bytecode` | force input interpretation (`auto` = default) |
+| `-O FMT` | `--out-format` | `bytecode` · `bytecode-shebang` · `base64-bytecode` · `exe` · `shared` · `static` | output format (`exe` = default; TOML: `[target] output`; CLI wins) |
 | `-B` | `--base64` | — | base64-encode/decode bytecode (text-pipe safe) |
+| `-b` | `--bytecode` | — | shorthand for `--out-format bytecode` |
 | | `--shebang[=INTERP]` | interpreter line | prepend `#!/usr/bin/env rubyc` (default) to bytecode |
+| `-g` | `--debug` | — | emit debug symbols (`.symtab`) in the ELF output |
+| `-m` | `--no-magic` | — | omit the 🐕🇨 preamble from every emitted artifact (AST, IR, ELF) |
+| `-P` | `--skip-pre-hook` | — | skip pre-build hooks (dev loop: transient sources are already materialized) |
+| `-Q` | `--skip-post-hook` | — | skip post-build hooks (dev loop: leaves transient sources in place) |
 | | `--lib PATH` | `.so`/`.a` path, repeatable | link `[LibraryImport]` stubs against these objects (TOML: `[libs] ruby_c`) |
 | `-j N` | `--jobs` | count | solution build parallelism (TOML: `[build] jobs`; CLI wins) |
 | | `--rci-only` | — | emit only the `.rci` sidecar, skipping codegen (TOML: `[build] rci-only`) |
+| | `--no-embed-types` | — | skip the embedded type fragment, for a pure-ABI image (TOML: `[build] no-embed-types`) |
 | | `--optimize` | — | function-level dead-code elimination (TOML: `[build] optimize`) |
 | | `--strip` | — | drop `.symtab`/`.strtab` from executables (TOML: `[build] strip`) |
 | | `--profile NAME` | profile name | solution build profile from `.rcs` `[profile.NAME]` |
+| | `--format FMT` | `shared` · `static` · `both` | `install libs` image kind |
 | | `--error-format FMT` | `text` · `json` · `json-pretty` | diagnostic rendering (see below) |
 | | `--no-color` | — | disable ANSI colors (auto-off when piped or `NO_COLOR` set) |
 | | `--define SYM` | repeatable | seed preprocessor symbols for `#If` |
 | | `--warn RULE` / `--deny RULE` / `--allow RULE` | rule id or name | lint level overrides, applied in CLI order |
 | `-v` / `-q` | `--verbose` / `--quiet` | — | more / less output |
-| | `--kind KIND` | `target` | filter `list` output by plugin kind |
+| | `--kind KIND` | `all` · `target` | filter `list` output by plugin kind |
 | | `--remote` | — | `list` shows registry plugins instead of installed |
 | | `--url URL` | direct URL | `download` fetches a plugin from a URL |
 

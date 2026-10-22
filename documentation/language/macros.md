@@ -48,4 +48,4 @@ expression, use `[Inline]` methods instead.
 
 - [`[Inline]` methods](attributes.md) — same zero-call-overhead goal for
   whole-function bodies.
-- [Preprocessor](preprocessing.md) — `#define/#If/#Error/#Assembly`.
+- [Preprocessor](../reference/preprocessing.md) — `#define/#If/#Error/#Assembly`.

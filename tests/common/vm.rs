@@ -250,3 +250,88 @@ pub fn vm_cleanup_file(remote_path: &str) {
         cleanup(&dir.to_string_lossy());
     }
 }
+
+/// Run a multi-file bundle on the VM: `files` are `(name, local path)`,
+/// staged together; `entry` is chmod +x and run from the bundle directory
+/// with `LD_LIBRARY_PATH=.` (so sibling `.so` dependencies resolve).
+///
+/// Libraries cannot be tested through [`vm_exec`] because it stages a
+/// single executable; this exists for the linking matrix.
+pub fn vm_exec_bundle(files: &[(&str, &Path)], entry: &str, args: &[&str]) -> Outcome {
+    let _lane = LaneGuard::take();
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let out = vm_exec_bundle_once(files, entry, args);
+        if !is_transport_failure(&out) || attempt >= 4 {
+            return out;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400 * attempt as u64));
+    }
+}
+
+fn vm_exec_bundle_once(files: &[(&str, &Path)], entry: &str, args: &[&str]) -> Outcome {
+    let fail = |msg: String| Outcome {
+        code: 255,
+        stdout: vec![],
+        stderr: msg.into_bytes(),
+        timed_out: false,
+    };
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let local = std::env::temp_dir().join(format!(
+        "rubyc_bundle_{}_{}",
+        std::process::id(),
+        n
+    ));
+    let _ = std::fs::remove_dir_all(&local);
+    if let Err(e) = std::fs::create_dir_all(&local) {
+        return fail(format!("bundle dir: {e}"));
+    }
+    for (name, path) in files {
+        if let Err(e) = std::fs::copy(path, local.join(name)) {
+            let _ = std::fs::remove_dir_all(&local);
+            return fail(format!("bundle copy {name}: {e}"));
+        }
+    }
+    let tar = local.with_extension("tar");
+    let mut pack = Command::new("tar");
+    pack.arg("-C").arg(&local).arg("-cf").arg(&tar);
+    for (name, _) in files {
+        pack.arg(name);
+    }
+    if let Ok(out) = pack.output()
+        && !out.status.success()
+    {
+        let _ = std::fs::remove_dir_all(&local);
+        return fail(format!("bundle tar: {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    let dir = match stage(&tar) {
+        Ok(d) => d,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&local);
+            let _ = std::fs::remove_file(&tar);
+            return fail(e);
+        }
+    };
+    let _ = std::fs::remove_dir_all(&local);
+    let _ = std::fs::remove_file(&tar);
+    let entry_arg = sh_quote(&format!("./{entry}"));
+    let quoted: Vec<String> = args.iter().map(|a| sh_quote(a)).collect();
+    let remote_cmd = format!(
+        "cd {dir} && tar -xf t && chmod +x {entry_arg} && LD_LIBRARY_PATH=. timeout -s KILL 50 {entry_arg} {}; echo \"{GUEST_RC_PREFIX}$?\"",
+        quoted.join(" ")
+    );
+    let mut ssh = ssh_base();
+    ssh.arg(remote_cmd);
+    let mut out = spawn_and_collect_timeout(&mut ssh, None, HOST_DEADLINE);
+    match extract_guest_rc(&mut out) {
+        Some(code) => out.code = code,
+        None if out.code == 255 && out.timed_out => {
+            out.stderr
+                .extend_from_slice(b"[vm_exec_bundle: host-side timeout]");
+        }
+        None => {}
+    }
+    cleanup(&dir);
+    out
+}

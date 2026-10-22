@@ -66,6 +66,21 @@ writes to a destination vreg. Exceptions are memory-side-effect instructions
 - **Languages:** Any language with float arithmetic
 - **Backends:** All must implement
 
+### `F2I { dst, src }`
+- **Operands:** `dst: VReg`, `src: VReg` (f64 bits)
+- **Semantics:** `dst = (i64)src`, truncating toward zero (`cvttsd2si`).
+  This is C#'s unchecked conversion from `float`/`double` to an integral
+  type; an out-of-range value yields `i64::MIN`.
+- **Languages:** Any language with float arithmetic
+- **Backends:** All must implement
+
+### `I2F { dst, src }`
+- **Operands:** `dst: VReg`, `src: VReg`
+- **Semantics:** `dst = (f64)src` (`cvtsi2sd`) — C#'s conversion from an
+  integral type to `float`/`double`, exact for `|src| < 2^53`
+- **Languages:** Any language with float arithmetic
+- **Backends:** All must implement
+
 ## Comparisons
 
 ### `Cmp { dst, op, a, b }`
@@ -108,11 +123,43 @@ writes to a destination vreg. Exceptions are memory-side-effect instructions
 - **Languages:** All (for FFI)
 - **Backends:** All must implement
 
+### `CallStatic { dst, fidx, args }`
+- **Operands:** `dst: VReg`, `fidx: u32` (function index in `Program::functions`), `args: Vec<VReg>`
+- **Semantics:** `dst = functions[fidx](args...)` — a direct call to a static
+  method, which has no receiver. The backend passes 0 in the receiver
+  register.
+- **Languages:** All
+- **Backends:** All must implement
+
+### `CallFnAddr { dst, target, args }`
+- **Operands:** `dst: VReg`, `target: VReg` (the address of the callee), `args: Vec<VReg>`
+- **Semantics:** `dst = target(args...)` — call through a function pointer
+  held in a register. A delegate is a value, so the callee's address is
+  only known at run time; this is the call that makes a delegate object
+  callable.
+- **Languages:** Languages with function values
+- **Backends:** All must implement
+
+### `FnAddr { dst, fidx }`
+- **Operands:** `dst: VReg`, `fidx: u32` (function index in `Program::functions`)
+- **Semantics:** `dst = &functions[fidx]` — the address of a function, for
+  a function pointer or a delegate
+- **Languages:** Languages with function values
+- **Backends:** All must implement
+
 ## Allocation and Memory
 
 ### `Alloc { dst, bytes }`
 - **Operands:** `dst: VReg`, `bytes: u64`
 - **Semantics:** `dst = heap_alloc(bytes)` — allocate a heap object
+- **Languages:** OOP languages, any language with heap objects
+- **Backends:** All must implement
+
+### `AllocDyn { dst, bytes }`
+- **Operands:** `dst: VReg`, `bytes: VReg` (the size is a runtime value)
+- **Semantics:** `dst = heap_alloc(*bytes)` — allocate a heap object whose
+  size is only known at run time (a concatenated string, a struct with a
+  computed length)
 - **Languages:** OOP languages, any language with heap objects
 - **Backends:** All must implement
 
@@ -126,6 +173,44 @@ writes to a destination vreg. Exceptions are memory-side-effect instructions
 - **Operands:** `dst: VReg`, `class: u32` (index into `Program::vtables`)
 - **Semantics:** `dst = &vtables[class]` — load the vtable pointer for a class
 - **Languages:** OOP languages with vtables
+- **Backends:** All must implement
+
+### `LoadStaticAddr { dst, idx }`
+- **Operands:** `dst: VReg`, `idx: u32` (index into `Program::statics`)
+- **Semantics:** `dst = &statics[idx]` — the address of a static slot
+- **Languages:** OOP languages with static storage
+- **Backends:** All must implement
+
+### `LoadStrAddr { dst, off, len }`
+- **Operands:** `dst: VReg`, `off: u32` (offset into `Program::strings`), `len: u32`
+- **Semantics:** `dst = &strings[off]` — the address of a string literal
+- **Languages:** Any language with string literals
+- **Backends:** All must implement
+
+### `LoadImport { dst, import }`
+- **Operands:** `dst: VReg`, `import: u32` (index into `Program::imports`)
+- **Semantics:** `dst = &imports[import]` — the address of an imported
+  symbol's slot
+- **Languages:** Languages with FFI
+- **Backends:** All must implement
+
+### `MemCpy { dst, src, len }`
+- **Operands:** `dst: VReg` (destination), `src: VReg` (source), `len: VReg`
+  (byte count)
+- **Semantics:** copy `len` bytes from `src` to `dst`
+- **Languages:** Any language with a copy operation
+- **Backends:** All must implement
+
+### `MemCmp { dst, a, b, len }`
+- **Operands:** `dst: VReg`, `a: VReg`, `b: VReg`, `len: VReg`
+- **Semantics:** `dst = memcmp(a, b, len)` — 0 when the ranges are equal
+- **Languages:** Any language that compares memory ranges
+- **Backends:** All must implement
+
+### `LoadByte { dst, base, off }`
+- **Operands:** `dst: VReg`, `base: VReg`, `off: u32` (byte offset)
+- **Semantics:** `dst = *(u8*)(base + off)` — a single byte, zero-extended
+- **Languages:** Any language with byte-addressed data
 - **Backends:** All must implement
 
 ## Object Fields
@@ -159,6 +244,13 @@ writes to a destination vreg. Exceptions are memory-side-effect instructions
 ### `WriteInt { src }`
 - **Operands:** `src: VReg`
 - **Semantics:** `write(stdout, itoa(i64(src)))`
+- **Languages:** All
+- **Backends:** All must implement
+
+### `WriteString { src }`
+- **Operands:** `src: VReg` (a first-class string: length at +0, refcount
+  at +8, data at +16)
+- **Semantics:** `write(stdout, [src+16..])` — print a string value
 - **Languages:** All
 - **Backends:** All must implement
 
@@ -203,12 +295,60 @@ writes to a destination vreg. Exceptions are memory-side-effect instructions
 - **Languages:** Rust (panic), Python (raise), C# (throw), C++ (throw)
 - **Backends:** Optional
 
-### `Resume { dst, args }`
-- **Operands:** `dst: VReg`, `args: Vec<VReg>`
-- **Semantics:** Resume execution after a catch. `dst` receives the
-  exception value; `args` are the catch parameters.
-- **Languages:** Python (except), Rust (catch), C# (catch)
+## Coroutines and Tasks
+
+### `TaskAlloc { dst, bytes }`
+- **Operands:** `dst: VReg`, `bytes: u64`
+- **Semantics:** `dst = task_alloc(bytes)` — allocate a coroutine frame on
+  the heap. The frame layout belongs to the runtime, not the compiler:
+  `[0]` state, `[1]` return value, `[2]` saved instruction pointer,
+  `[3..]` saved locals.
+- **Languages:** Languages with coroutines or async functions
+- **Backends:** All must implement
+
+### `Suspend { state }`
+- **Operands:** `state: VReg` (the state-machine state to resume at)
+- **Semantics:** Save the current state and locals into the task frame and
+  return to the scheduler. A resumed task continues at the next state
+  block.
+- **Languages:** Languages with coroutines or async functions
+- **Backends:** All must implement
+
+### `CoroutineResume { task, dst }`
+- **Operands:** `task: VReg` (the task frame), `dst: VReg`
+- **Semantics:** Resume `task`; `dst` receives its result once the
+  coroutine completes.
+- **Languages:** Languages with coroutines or async functions
+- **Backends:** All must implement
+
+### `HandlerEnter { dst, handler }`
+- **Operands:** `dst: VReg`, `handler: u32` (block index)
+- **Semantics:** Push a catch handler onto the runtime's handler stack and
+  jump to `handler` when an exception unwinds past it. The runtime's
+  `setjmp` lands here on the first entry (`dst` = 0) and again after a
+  `longjmp` (`dst` = 1).
+- **Languages:** Languages with exceptions
 - **Backends:** Optional
+
+### `HandlerPop`
+- **Semantics:** Remove the innermost active handler — the normal
+  completion of a `try`.
+- **Languages:** Languages with exceptions
+- **Backends:** Optional
+
+### `LoadExc { dst }`
+- **Operands:** `dst: VReg`
+- **Semantics:** `dst` = the in-flight exception payload.
+- **Languages:** Languages with exceptions
+- **Backends:** Optional
+
+### `BuildArgv { dst }`
+- **Operands:** `dst: VReg`
+- **Semantics:** `dst` = a string array built from the process argv. A host
+  without an argv slot (the JIT) supplies its own; a zero slot yields an
+  empty array rather than a fault.
+- **Languages:** Languages with a process entry point
+- **Backends:** All must implement
 
 ## Terminators
 
@@ -225,6 +365,10 @@ Terminators end a basic block. Every block has exactly one.
 ### `ExitWith { code }`
 - **Operands:** `code: VReg`
 - **Semantics:** Exit the process with the code in `code`.
+
+### `Rethrow`
+- **Semantics:** Re-throw the in-flight exception to an enclosing handler.
+  Never returns.
 
 ### `Branch { cond, if_true, if_false }`
 - **Operands:** `cond: Option<VReg>`, `if_true: u32`, `if_false: u32`

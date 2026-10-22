@@ -96,11 +96,11 @@ exactly or as an ancestor (`System.Text` owns `System.Text.Decoder`).
 
 ## Commands
 
-- `install libs [--format shared|static|both] [--jobs N]`: pull the
-  runtime tree if missing (offline loud-fails), rebuild only stale
-  libraries (installed image vs hash inputs), install via post-build
-  hooks. `--format both` runs a shared pass then a static pass
-  (dynamic projects skip static: no home image to copy-link from).
+- `install libs [--format shared|static|both] [--jobs N]`: operate on the
+  nearest `.rcs`/`.rcp` walking up from the working directory (the same
+  discovery `build` uses); rebuild only stale libraries (installed image vs
+  hash inputs), install via post-build hooks. `--format both` runs a shared
+  pass then a static pass (dynamic projects skip static: no home image to
+  copy-link from).
 - `build <solution> --jobs N`: concurrent project builds.
 - `build <project> --rci-only`: fragment sidecar only, no codegen.
-- `build <missing-path-under-dotnet-runtime>`: pulls first.

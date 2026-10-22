@@ -8,15 +8,15 @@ required at runtime.
 
 ```
 Heap:
-┌──────────────────────────────────────────────────┐
-│ Object 0                                         │
-│   [vtable ptr] [refcount] [field0] [field1] ... │
-├──────────────────────────────────────────────────┤
-│ Object 1                                         │
-│   [vtable ptr] [refcount] [field0] [field1] ... │
-├──────────────────────────────────────────────────┤
-│ ...                                              │
-└──────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│ Object 0                                                   │
+│   [vtable ptr] [refcount] [runtime type] [field0] [field1]  │
+├────────────────────────────────────────────────────────────┤
+│ Object 1                                                   │
+│   [vtable ptr] [refcount] [runtime type] [field0] [field1]  │
+├────────────────────────────────────────────────────────────┤
+│ ...                                                        │
+└────────────────────────────────────────────────────────────┘
 ```
 
 The heap is a contiguous region. `Alloc` bumps the allocation pointer;
@@ -26,13 +26,18 @@ The heap is a contiguous region. `Alloc` bumps the allocation pointer;
 
 The header size depends on the language:
 
-| Language | Vtable | Refcount | Header Size |
-|---|---|---|---|
-| RubyC | Yes | Yes | 16 bytes |
-| C# (typical) | Yes | No | 8 bytes |
-| Python | Yes | Yes | 16+ bytes |
-| Rust | No | No | 0 bytes |
-| C struct | No | No | 0 bytes |
+| Language | Vtable | Refcount | Runtime type | Header Size |
+|---|---|---|---|---|
+| RubyC | Yes | Yes | Yes | 24 bytes |
+| C# (typical) | Yes | No | No | 8 bytes |
+| Python | Yes | Yes | No | 16+ bytes |
+| Rust | No | No | No | 0 bytes |
+| C struct | No | No | No | 0 bytes |
+
+The runtime type is the descriptor of the instance's instantiation.
+It is what carries a generic class's type arguments: `Box<int>` and
+`Box<string>` are the same class but different runtime types, and a
+method of `Box<T>` reads its own type argument out of it.
 
 The frontend sets the header size implicitly by the byte offsets it emits
 in `LoadField`/`StoreField`. The backend doesn't need to know the header
@@ -46,13 +51,13 @@ fields). The `LoadField`/`StoreField` instructions take the absolute byte
 offset.
 
 ```
-// For a class with vtable + refcount (16-byte header):
-//   field 0 is at offset 16
-//   field 1 is at offset 24
-//   field 2 is at offset 32
+// For a class with vtable + refcount + runtime type (24-byte header):
+//   field 0 is at offset 24
+//   field 1 is at offset 32
+//   field 2 is at offset 40
 
-LoadField { dst: v4, base: v0, off: 16 }  // v4 = v0.field0
-StoreField { base: v0, off: 24, src: v5 }  // v0.field1 = v5
+LoadField { dst: v4, base: v0, off: 24 }  // v4 = v0.field0
+StoreField { base: v0, off: 32, src: v5 }  // v0.field1 = v5
 ```
 
 ## Reference Counting (Optional)

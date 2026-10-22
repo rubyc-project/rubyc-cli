@@ -1,0 +1,25 @@
+namespace TestAll {
+    public interface ITest { void M(); }
+    public class Base { public virtual void V() {} }
+    public struct S { public int X; }
+    public enum E { A, B }
+    delegate void D();
+    
+    public class AllTest : Base, ITest {
+        public const int C = 5;
+        public static readonly int R = 10;
+        public event D Ev;
+        public void M() {}
+        public override void V() { base.V(); }
+        public static void Main() {
+            int x = 1 + 2 * 3;
+            if (x > 0) {} else {}
+            for (int i = 0; i < 10; i++) {}
+            S s = new S();
+            E e = E.A;
+            D d = () => {};
+            string name = nameof(AllTest);
+            var t = (1, 2);
+        }
+    }
+}

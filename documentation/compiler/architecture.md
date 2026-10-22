@@ -35,9 +35,10 @@ helpers live in `utilities/`, never duplicated.
 | Parser | `src/parser/rd/` | `CompilationUnit` AST |
 | Bytecode | `src/bytecode/` | 🐕🇨 container, tag-tree encode/decode |
 | Semantic | `src/native/semantic/` | `TypeTable` + diagnostics |
-| IR lowering | `src/native/ir/lower.rs` | virtual-register three-address code |
-| Regalloc | `src/native/codegen/regalloc.rs` | vreg → callee-saved reg or slot |
-| Emission | `src/native/target_os/linux_x86_64/encode_x64.rs` | machine code + relocations |
+| IR lowering | `src/native/ir/lower/` | virtual-register three-address code |
+| IR verifier | `src/native/ir/verify.rs` | definite-assignment check; internal error on violation |
+| Regalloc | `plugins/targets/rubyc-target-linux-x86_64/src/x86/regalloc.rs` | vreg → callee-saved reg or slot |
+| Emission | `plugins/targets/rubyc-target-linux-x86_64/src/x86/encode_x64.rs` | machine code + relocations |
 | Images | `elf.rs` (exec) · `shlib.rs` (shared) | static ELF / ET_DYN `.so` |
 | Assembly | `src/parser/assembly/` | parsed NASM-flavored subset → x86-64 bytes |
 
@@ -62,6 +63,20 @@ encoder. Standalone `.asm` input is assembled by the driver and wrapped by
 the Linux x86-64 ELF image writer. Preprocessing also captures `#Assembly`
 blocks on the compilation unit, but lowering those blocks to raw native IR is
 not complete yet.
+
+## IR verifier
+
+`lower()` runs `ir::verify::verify` on the assembled `Program` before either
+backend sees it. Every vreg read must be assigned on every path that reaches
+it: either one definition dominates the use, or a dataflow proof covers a
+join target assigned in several blocks. A violation stops the build with
+`LowerError::IrInvalid` ("internal compiler error: invalid IR").
+
+The check exists because a vreg is a function-wide slot, not an SSA name.
+Defining one inside a branch and reading it in a sibling arm reads an
+uninitialized register or spill slot; that class shipped once in the printf
+UTF-8 encoder (shared constants created inside one arm) and produced
+`E0 00 00` for `é`.
 
 ## Register model
 

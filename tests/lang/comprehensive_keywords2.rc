@@ -1,0 +1,7 @@
+namespace TestLang {
+    public class KeywordsTest {
+        public static void Main() {
+            int x = 5;
+        }
+    }
+}
