@@ -24,7 +24,13 @@ fn pipeline() -> NativePipeline<'static> {
 
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
-    std::process::exit(rubyc::driver::cli_main(argv, &pipeline()));
+    // Lowering deeply-nested generated methods needs a large stack;
+    // the default 8 MB overflows. Run on a thread with 64 MB.
+    let handle = std::thread::Builder::new()
+        .stack_size(1024 * 1024 * 1024)
+        .spawn(move || rubyc::driver::cli_main(argv, &pipeline()))
+        .expect("failed to spawn main thread");
+    std::process::exit(handle.join().unwrap_or(1));
 }
 
 /// End-to-end suites: see `tests/mod.rs` for the file map.
